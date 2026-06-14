@@ -2,7 +2,7 @@
 
 A World of Warcraft addon for WoW 12.0 (Midnight) that adds tracking bars, custom icon groups, and cooldown tooling built on top of Blizzard's native CooldownViewer (CDM).
 
-**Current version:** 3.6.8  
+**Current version:** 3.7.0  
  
 **Related addon:** ArcUI_ProcTracker
 
