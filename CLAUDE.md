@@ -131,18 +131,27 @@ locally-tracked cast times, isActive/isEnabled flags.
 - Before any risky change, ensure the current state is committed so it can be rolled back.
 - After edits: `luac -p` every touched file, then summarize briefly what changed and why.
 - Communication style: be direct and concise. No lengthy preambles or restated requirements.
+- When a new WoW patch drops, re-mirror the relevant API_changes wiki page into
+  `E:\WoWDev\reference\wiki\` and `git pull` `E:\WoWDev\wow-ui-source`. All reference material
+  goes in `E:\WoWDev\`, never in the addon folder.
 
 ---
 
 ## Reference Sources
 
-- **Blizzard's full UI source** (Gethe/wow-ui-source, beta branch) lives at
-  `E:\WoWDev\wow-ui-source` — grep/read it directly when diagnosing CDM interactions or verifying
-  API behavior. CDM (CooldownViewer) source:
-  `E:\WoWDev\wow-ui-source\Interface\AddOns\Blizzard_CooldownViewer`.
-- **API signatures and secret-value annotations:**
-  `E:\WoWDev\wow-ui-source\Interface\AddOns\Blizzard_APIDocumentationGenerated`.
-- Run `git pull` in `E:\WoWDev\wow-ui-source` to update on new builds.
+Reference material lives OUTSIDE this addon folder — never save reference files, mirrors, or
+clones inside the ArcUI directory.
+
+- **E:\WoWDev\wow-ui-source** — local clone of Blizzard's UI source (beta branch). Ground truth
+  for actual API/CDM behavior; grep and read it directly. CDM (CooldownViewer) source:
+  `Interface\AddOns\Blizzard_CooldownViewer`. API signatures and secret-value annotations are in
+  `Interface\AddOns\Blizzard_APIDocumentationGenerated`. Run `git pull` there to update on new
+  builds.
+- **warcraft.wiki.gg** — community WoW API wiki. Fetch for event payloads, API signatures, and
+  per-patch change lists (e.g. https://warcraft.wiki.gg/wiki/Patch_12.0.0/API_changes). If the
+  wiki and the Blizzard source disagree, trust the source and say so.
+- **E:\WoWDev\reference\wiki\** — locally mirrored wiki pages. Check there before fetching the
+  live wiki.
 
 ---
 
