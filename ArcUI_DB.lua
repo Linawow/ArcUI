@@ -393,6 +393,22 @@ ns.DB_DEFAULTS = {
           -- Frame strata settings
           barFrameStrata = "MEDIUM",
           barFrameLevel = 10,
+          -- Text color thresholds (resource bars only; all off by default)
+          textColorThresholdEnabled = false,
+          textColorThresholdFill = false,
+          textColorThresholdBaseColor = {r=1, g=1, b=1, a=1},
+          textColorThresholdT1Enabled = false,
+          textColorThresholdT1Value = 15,
+          textColorThresholdT1Color = {r=1, g=0.6, b=0.8, a=1},
+          textColorThresholdT2Enabled = false,
+          textColorThresholdT2Value = 30,
+          textColorThresholdT2Color = {r=0.5, g=1, b=0.5, a=1},
+          textColorThresholdT3Enabled = false,
+          textColorThresholdT3Value = 90,
+          textColorThresholdT3Color = {r=1, g=0.3, b=0.3, a=1},
+          textColorThresholdT4Enabled = false,
+          textColorThresholdT4Value = 100,
+          textColorThresholdT4Color = {r=1, g=1, b=0.3, a=1},
         },
         behavior = {
           hideOutOfCombat = false,
@@ -643,6 +659,12 @@ ns.DB_DEFAULTS = {
       interruptFeedbackEnabled = false,
       interruptColor = {r=1, g=0.15, b=0.15, a=1},
       interruptFadeDuration = 1.0,
+      -- Spell name shortening (display only; off by default)
+      spellShortenEnabled = false,
+      spellShortenLength = 20,
+      -- Movable spell icon (off = default left-of-bar position)
+      iconMovable = false,
+      iconPosition = nil,
       -- Cast-type appearance profiles + Auto Share. Checked category = shared across all
       -- cast types; unchecked = customised per type. All categories default OFF (per-type),
       -- so each cast type has its own colors/border/text/etc. out of the box.

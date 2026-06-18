@@ -802,6 +802,40 @@ function ns.CastbarOptions.GetOptionsTable()
         set    = function(_, v) local c = GetCastbarDB(); if c then c.iconSize = v; Refresh() end end,
       },
 
+      iconMovable = {
+        type   = "toggle",
+        name   = "Independent Position",
+        desc   = "Allow the spell icon to be dragged to a custom position while the options panel is open.",
+        order  = 110.3,
+        width  = 1.2,
+        hidden = H("barIcon", function() local c = GetCastbarDB(); return not (c and c.showIcon) end),
+        get    = function() local c = GetCastbarDB(); return c and c.iconMovable end,
+        set    = function(_, v)
+          local c = GetCastbarDB()
+          if c then
+            c.iconMovable = v
+            if not v then c.iconPosition = nil end
+            Refresh()
+          end
+        end,
+      },
+
+      iconPositionReset = {
+        type   = "execute",
+        name   = "Reset Icon Position",
+        desc   = "Restore the icon to its default position (left of bar).",
+        order  = 110.4,
+        width  = 1.0,
+        hidden = H("barIcon", function()
+          local c = GetCastbarDB()
+          return not (c and c.showIcon and c.iconMovable)
+        end),
+        func   = function()
+          local c = GetCastbarDB()
+          if c then c.iconPosition = nil; Refresh() end
+        end,
+      },
+
       -- ══ Text ═══════════════════════════════════════════════════════
       textHeader = Header("Text", "text", 120),
 
@@ -812,6 +846,32 @@ function ns.CastbarOptions.GetOptionsTable()
         hidden = H("text"),
         get    = function() local c = GetCastbarDB(); return c and PGet(c, "showText") end,
         set    = function(_, v) local c = GetCastbarDB(); if c then PSet(c, "showText", v); Refresh() end end,
+      },
+
+      spellShortenEnabled = {
+        type   = "toggle",
+        name   = "Shorten Long Names",
+        desc   = "Truncate spell names that exceed the character limit.",
+        order  = 120.12,
+        width  = 1.1,
+        hidden = H("text", function() local c = GetCastbarDB(); return not (c and PGet(c, "showText")) end),
+        get    = function() local c = GetCastbarDB(); return c and c.spellShortenEnabled end,
+        set    = function(_, v) local c = GetCastbarDB(); if c then c.spellShortenEnabled = v; Refresh() end end,
+      },
+
+      spellShortenLength = {
+        type   = "range",
+        name   = "Max Characters",
+        desc   = "Truncate spell names longer than this many characters (appends ..).",
+        order  = 120.13,
+        width  = 1.0,
+        min    = 5, max = 40, step = 1,
+        hidden = H("text", function()
+          local c = GetCastbarDB()
+          return not (c and PGet(c, "showText") and c.spellShortenEnabled)
+        end),
+        get    = function() local c = GetCastbarDB(); return c and c.spellShortenLength or 20 end,
+        set    = function(_, v) local c = GetCastbarDB(); if c then c.spellShortenLength = v; Refresh() end end,
       },
 
       showTimer = {

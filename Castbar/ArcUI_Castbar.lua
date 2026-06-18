@@ -137,6 +137,15 @@ local function GetEffectiveCfg()
   return EffectiveCfg(c, ResolveDisplayType())
 end
 
+local function TruncateSpellName(name, cfg)
+  if type(name) ~= "string" or not cfg.spellShortenEnabled then return name end
+  local limit = cfg.spellShortenLength or 20
+  if string.len(name) > limit then
+    return string.sub(name, 1, limit) .. ".."
+  end
+  return name
+end
+
 -- ===================================================================
 -- FRAME CREATION
 -- ===================================================================
@@ -178,14 +187,36 @@ local function CreateCastbarFrames()
   frame.borderOverlay.left:SetSnapToPixelGrid(false);   frame.borderOverlay.left:SetTexelSnappingBias(0)
   frame.borderOverlay.right:SetSnapToPixelGrid(false);  frame.borderOverlay.right:SetTexelSnappingBias(0)
 
-  -- Icon frame (to the left of the bar)
+  -- Icon frame (to the left of the bar by default; can be repositioned when iconMovable=true)
   frame.iconFrame = CreateFrame("Frame", nil, frame)
   frame.iconFrame:SetSize(20, 20)
   frame.iconFrame:SetPoint("RIGHT", frame, "LEFT", -2, 0)
   frame.iconFrame:SetFrameLevel(frame:GetFrameLevel() + 5)
+  frame.iconFrame:SetMovable(true)
+  frame.iconFrame:SetClampedToScreen(true)
   frame.iconTex = frame.iconFrame:CreateTexture(nil, "ARTWORK")
   frame.iconTex:SetAllPoints()
   frame.iconTex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+  frame.iconFrame:RegisterForDrag("LeftButton")
+  frame.iconFrame:SetScript("OnDragStart", function(self)
+    if ns._arcUIOptionsOpen then self:StartMoving() end
+  end)
+  frame.iconFrame:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    local cfg = GetCastbarDB()
+    local mainFrame = castFrameObj
+    if cfg and mainFrame then
+      local mainLeft   = mainFrame:GetLeft()       or 0
+      local mainBottom = mainFrame:GetBottom()     or 0
+      local iconLeft   = self:GetLeft()            or 0
+      local iconBottom = self:GetBottom()          or 0
+      local offsetX = math.floor(iconLeft - mainLeft + 0.5)
+      local offsetY = math.floor(iconBottom - mainBottom + 0.5)
+      cfg.iconPosition = { point="BOTTOMLEFT", relPoint="BOTTOMLEFT", x=offsetX, y=offsetY }
+      self:ClearAllPoints()
+      self:SetPoint("BOTTOMLEFT", mainFrame, "BOTTOMLEFT", offsetX, offsetY)
+    end
+  end)
 
   -- Segment bars for empowered casts — one StatusBar per stage, fills with its own color
   -- Pool of 8 supports up to empowerMaxStages = 8; unused bars stay hidden.
@@ -650,6 +681,13 @@ function ns.Castbar.ApplyAppearance()
   -- Icon
   local iconSize = PixelSize(cfg.iconSize or 20)
   mainFrame.iconFrame:SetSize(iconSize, iconSize)
+  mainFrame.iconFrame:ClearAllPoints()
+  if cfg.iconMovable and cfg.iconPosition then
+    local pos = cfg.iconPosition
+    mainFrame.iconFrame:SetPoint(pos.point, mainFrame, pos.relPoint, pos.x, pos.y)
+  else
+    mainFrame.iconFrame:SetPoint("RIGHT", mainFrame, "LEFT", -2, 0)
+  end
   if cfg.showIcon then
     mainFrame.iconFrame:Show()
   else
@@ -979,7 +1017,7 @@ local function ShowCast(spellID, startTimeMS, endTimeMS, isChannel, notInterrupt
 
   -- Spell name
   if cfg.showText then
-    textFrame.nameText:SetText(spellName or "")
+    textFrame.nameText:SetText(TruncateSpellName(spellName or "", cfg))
   else
     textFrame.nameText:SetText("")
   end
@@ -1006,6 +1044,7 @@ local function ShowCast(spellID, startTimeMS, endTimeMS, isChannel, notInterrupt
   end
 
   mainFrame:EnableMouse(false)  -- never interactive during a live cast
+  mainFrame.iconFrame:EnableMouse(false)
   mainFrame:Show()
   textFrame:Show()
   if castIsEmpowered then
@@ -1126,7 +1165,14 @@ local function ShowPreview()
     mainFrame.fillBar:SetStatusBarColor(color.r, color.g, color.b, color.a or 1)
     mainFrame.fillBar:SetValue(0.6)
   end
-  mainFrame.iconFrame:Hide()
+  if cfg.iconMovable and cfg.showIcon then
+    mainFrame.iconTex:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+    mainFrame.iconFrame:EnableMouse(true)
+    mainFrame.iconFrame:Show()
+  else
+    mainFrame.iconFrame:EnableMouse(false)
+    mainFrame.iconFrame:Hide()
+  end
 
   textFrame.nameText:SetText(cfg.showText and "Castbar Preview" or "")
   textFrame.timerText:SetText(cfg.showTimer and "1.2" or "")
@@ -1179,18 +1225,18 @@ ns.Castbar.HidePreview = HidePreview
 -- ===================================================================
 local castEventFrame = CreateFrame("Frame")
 castEventFrame:RegisterEvent("PLAYER_LOGIN")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_START")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_DELAYED")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_STOP")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_FAILED")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_INTERRUPTED")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_UPDATE")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_EMPOWER_START")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_EMPOWER_STOP")
-castEventFrame:RegisterEvent("UNIT_SPELLCAST_EMPOWER_UPDATE")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_START",         "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_DELAYED",        "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_STOP",           "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED",         "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED",    "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED",      "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START",  "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP",   "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_UPDATE", "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_START",  "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_STOP",   "player")
+castEventFrame:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_UPDATE", "player")
 castEventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 castEventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 castEventFrame:RegisterEvent("ACTIVE_PLAYER_SPECIALIZATION_CHANGED")
