@@ -2210,572 +2210,6 @@ function ns.Display.UpdateBar(barNumber, stacks, maxStacks, active, durationFont
   SafeHide(barFrame.missingSetupOverlay)
   if iconFrame then SafeHide(iconFrame.missingSetupOverlay) end
   
-  -- ═══════════════════════════════════════════════════════════════════
-  -- ICON MODE
-  -- ═══════════════════════════════════════════════════════════════════
-  if displayType == "icon" then
-    local cfg = barConfig.display
-    
-    -- Always hide single iconFrame when multi-icon mode is enabled
-    if cfg.iconMultiMode then
-      SafeHide(iconFrame)
-      SafeHide(iconFrame.stacksFrame)
-    end
-    
-    -- ═══════════════════════════════════════════════════════════════════
-    -- MULTI-ICON MODE - Show separate icon for each stack
-    -- ═══════════════════════════════════════════════════════════════════
-    if cfg.iconMultiMode then
-      -- Hide regular display elements
-      SafeHide(barFrame)
-      SafeHide(textFrame)
-      SafeHide(durationFrame)
-      SafeHide(iconFrame)
-      SafeHide(iconFrame.stacksFrame)
-      SafeHide(nameFrame)
-      SafeHide(barIconFrame)
-      
-      -- Get the icon texture from CACHED config value only
-      -- This was saved out of combat when tracking was set up
-      -- Do NOT call GetTexture() or GetSpellTexture() here - they return secret values in combat
-      local iconTex = barConfig.tracking.iconTextureID or "Interface\\Icons\\INV_Misc_QuestionMark"
-      
-      -- Get or create multi-icon frames
-      local multiFrames = GetMultiIconFrames(barNumber, maxStacks)
-      
-      -- Get positioning settings
-      local spacing = cfg.iconMultiSpacing or 4
-      local direction = cfg.iconMultiDirection or "RIGHT"
-      local iconSize = cfg.iconSize or 48
-      local showDurationOn = cfg.iconMultiShowDurationOn or 1  -- 0=none, 1=first, 2-10=first N, -1=last
-      local durationFontSize = cfg.iconDurationFontSize or 12
-      local dc = cfg.iconDurationColor or {r=1, g=1, b=1, a=1}
-      local freeMode = cfg.iconMultiFreeMode  -- Free positioning mode
-      
-      -- ═══════════════════════════════════════════════════════════════════
-      -- STACK COUNT DETECTION using CDM FontString secret value trick
-      -- If issecretvalue(stackText) returns true, we have 2+ stacks
-      -- If it returns false, we have 0-1 stacks
-      -- ═══════════════════════════════════════════════════════════════════
-      local detectedMultipleStacks = false
-      local trackedCooldownID = barConfig.tracking.cooldownID
-      
-      if trackedCooldownID then
-        -- Cache CDM icon lookup on barFrame (cooldownID doesn't change during combat)
-        local cdmIcon = barFrame._cachedCdmIcon
-        if not cdmIcon or (cdmIcon ~= false and cdmIcon.cooldownID ~= trackedCooldownID) then
-          cdmIcon = nil
-          -- Try FindFrameByCooldownID if available (avoids GetChildren scan)
-          if ns.CDMEnhance and ns.CDMEnhance.FindFrameByCooldownID then
-            cdmIcon = ns.CDMEnhance.FindFrameByCooldownID(trackedCooldownID)
-          end
-          if not cdmIcon then
-            local viewer = _G["BuffIconCooldownViewer"]
-            if viewer then
-              for _, child in pairs({viewer:GetChildren()}) do
-                if child.cooldownID == trackedCooldownID then
-                  cdmIcon = child
-                  break
-                end
-              end
-            end
-          end
-          barFrame._cachedCdmIcon = cdmIcon or false
-        end
-        if cdmIcon and cdmIcon ~= false then
-          local appFS = cdmIcon.Applications and cdmIcon.Applications.Applications
-          if appFS then
-            local stackText = appFS:GetText()
-            if stackText then
-              detectedMultipleStacks = issecretvalue(stackText)
-            end
-          end
-        end
-      end
-      
-      -- Calculate which icons show duration based on showDurationOn setting and detected stacks
-      -- showDurationOn values:
-      --   0 = none
-      --   1 = first icon only
-      --   2-10 = first N icons (when filled)
-      --   -1 = last icon only
-      -- Use cached optionsOpen from function start for preview mode
-      local usePreviewValue = optionsOpen and (not active or previewMode)
-      local previewStackCount = nil
-      if usePreviewValue then
-        -- Use global previewStacks (0-1 decimal) to calculate preview
-        local pct = previewStacks or 0.5
-        previewStackCount = math_floor(maxStacks * pct + 0.5)
-        if previewStackCount < 1 then previewStackCount = math_ceil(maxStacks / 2) end
-      end
-      
-      -- Update each multi-icon frame
-      for i = 1, maxStacks do
-        local mFrame = multiFrames[i]
-        if mFrame then
-          -- Set size
-          mFrame:SetSize(iconSize, iconSize)
-          
-          -- Set position - use saved position (free mode) or calculate default
-          mFrame:ClearAllPoints()
-          local savedPos = cfg.iconMultiPositions and cfg.iconMultiPositions[i]
-          
-          if freeMode and savedPos then
-            -- Free mode with saved position
-            mFrame:SetPoint(savedPos.point, UIParent, savedPos.relPoint, savedPos.x, savedPos.y)
-          elseif not freeMode then
-            -- Auto-layout mode - calculate positions based on direction
-            local offsetX, offsetY = 0, 0
-            if direction == "RIGHT" then
-              offsetX = (i - 1) * (iconSize + spacing)
-            elseif direction == "LEFT" then
-              offsetX = -(i - 1) * (iconSize + spacing)
-            elseif direction == "UP" then
-              offsetY = (i - 1) * (iconSize + spacing)
-            elseif direction == "DOWN" then
-              offsetY = -(i - 1) * (iconSize + spacing)
-            end
-            
-            -- Use main icon position as anchor
-            local mainPos = cfg.position
-            if mainPos then
-              mFrame:SetPoint(mainPos.point, UIParent, mainPos.relPoint, mainPos.x + offsetX, mainPos.y + offsetY)
-            else
-              mFrame:SetPoint("CENTER", UIParent, "CENTER", offsetX, offsetY)
-            end
-          else
-            -- Free mode but no saved position yet - use default layout
-            local offsetX, offsetY = 0, 0
-            if direction == "RIGHT" then
-              offsetX = (i - 1) * (iconSize + spacing)
-            elseif direction == "LEFT" then
-              offsetX = -(i - 1) * (iconSize + spacing)
-            elseif direction == "UP" then
-              offsetY = (i - 1) * (iconSize + spacing)
-            elseif direction == "DOWN" then
-              offsetY = -(i - 1) * (iconSize + spacing)
-            end
-            
-            local mainPos = cfg.position
-            if mainPos then
-              mFrame:SetPoint(mainPos.point, UIParent, mainPos.relPoint, mainPos.x + offsetX, mainPos.y + offsetY)
-            else
-              mFrame:SetPoint("CENTER", UIParent, "CENTER", offsetX, offsetY)
-            end
-          end
-          
-          -- Set icon texture ONLY when out of combat (SetStatusBarTexture doesn't accept secret/tainted values)
-          -- Track what texture is set so we don't try to set it again during combat
-          if not InCombatLockdown() then
-            if mFrame.currentTextureID ~= iconTex then
-              mFrame.iconBar:SetStatusBarTexture(iconTex)
-              mFrame.iconBar:SetStatusBarColor(1, 1, 1, 1)  -- Ensure white color!
-              -- DON'T use SetTexCoord on StatusBar texture - it breaks the display
-              
-              -- Set desaturated background texture (same icon, but gray)
-              mFrame.desatBg:SetTexture(iconTex)
-              mFrame.desatBg:SetTexCoord(0.08, 0.92, 0.08, 0.92)  -- TexCoord OK on regular Texture
-              mFrame.desatBg:SetDesaturated(true)
-              mFrame.desatBg:SetVertexColor(0.4, 0.4, 0.4, 1)
-              
-              mFrame.currentTextureID = iconTex
-            end
-          end
-          
-          -- Set min/max values for this stack position (i-1, i)
-          -- Stack 1: (0,1), Stack 2: (1,2), etc.
-          local iconInterp = GetBarInterpolation(cfg.enableSmoothing)
-          mFrame.iconBar:SetMinMaxValues(i - 1, i, iconInterp)
-          
-          -- Pass the stacks value through to SetValue
-          -- SetValue accepts secret values - it will show filled when stacks >= i
-          if usePreviewValue and previewStackCount then
-            -- Preview mode: use calculated preview count
-            mFrame.iconBar:SetValue(previewStackCount, iconInterp)
-          elseif stacks then
-            -- Live mode: pass secret value directly through
-            mFrame.iconBar:SetValue(stacks, iconInterp)
-          else
-            -- No stacks data: show empty
-            mFrame.iconBar:SetValue(0, iconInterp)
-          end
-          
-          -- Background visibility (desaturated icon background)
-          local showDesatBg = cfg.iconMultiShowDesatBg
-          if showDesatBg == nil then showDesatBg = true end  -- Default to showing
-          
-          if showDesatBg or optionsOpen then
-            -- Show desaturated background (always show during editing for visibility)
-            SafeShow(mFrame.desatBg)
-            SafeShow(mFrame.solidBg)
-          else
-            -- Hide background - only show filled icons
-            SafeHide(mFrame.desatBg)
-            SafeHide(mFrame.solidBg)
-          end
-          
-          -- Border
-          if cfg.iconShowBorder then
-            local bc = cfg.iconBorderColor or {r=0, g=0, b=0, a=1}
-            mFrame.border:SetColorTexture(bc.r, bc.g, bc.b, bc.a)
-            SafeShow(mFrame.border)
-          else
-            SafeHide(mFrame.border)
-          end
-          
-          -- Duration text - use new shouldShowDuration logic
-          local showDuration = ShouldShowIconDuration(i, showDurationOn, maxStacks, detectedMultipleStacks)
-          
-          -- In preview mode, use the preview stack count for visibility
-          if usePreviewValue and previewStackCount then
-            -- Preview: show duration on icons up to previewStackCount, limited by showDurationOn
-            if showDurationOn == 0 then
-              showDuration = false
-            elseif showDurationOn == -1 then
-              showDuration = (i == maxStacks)
-            elseif showDurationOn == 1 then
-              showDuration = (i == 1)
-            elseif showDurationOn >= 2 then
-              -- In preview, show on first N icons up to the preview stack count
-              showDuration = (i <= showDurationOn) and (i <= previewStackCount)
-            end
-          end
-          
-          -- Get duration anchor setting
-          local durationAnchor = cfg.iconMultiDurationAnchor or "BOTTOM"
-          
-          -- Update duration position based on anchor
-          mFrame.duration:ClearAllPoints()
-          if durationAnchor == "CENTER" then
-            mFrame.duration:SetPoint("CENTER", mFrame, "CENTER", 0, 0)
-          elseif durationAnchor == "TOP" then
-            mFrame.duration:SetPoint("TOP", mFrame, "TOP", 0, -2)
-          elseif durationAnchor == "BOTTOM" then
-            mFrame.duration:SetPoint("BOTTOM", mFrame, "BOTTOM", 0, 2)
-          elseif durationAnchor == "LEFT" then
-            mFrame.duration:SetPoint("LEFT", mFrame, "LEFT", 2, 0)
-          elseif durationAnchor == "RIGHT" then
-            mFrame.duration:SetPoint("RIGHT", mFrame, "RIGHT", -2, 0)
-          elseif durationAnchor == "TOPLEFT" then
-            mFrame.duration:SetPoint("TOPLEFT", mFrame, "TOPLEFT", 2, -2)
-          elseif durationAnchor == "TOPRIGHT" then
-            mFrame.duration:SetPoint("TOPRIGHT", mFrame, "TOPRIGHT", -2, -2)
-          elseif durationAnchor == "BOTTOMLEFT" then
-            mFrame.duration:SetPoint("BOTTOMLEFT", mFrame, "BOTTOMLEFT", 2, 2)
-          elseif durationAnchor == "BOTTOMRIGHT" then
-            mFrame.duration:SetPoint("BOTTOMRIGHT", mFrame, "BOTTOMRIGHT", -2, 2)
-          else
-            mFrame.duration:SetPoint("BOTTOM", mFrame, "BOTTOM", 0, 2)
-          end
-          
-          if showDuration and cfg.iconShowDuration then
-            local durationOutline = GetOutlineFlag(cfg.iconDurationOutline)
-            local durationFont = "Fonts\\FRIZQT__.TTF"
-            if LSM and cfg.iconDurationFont then
-              local font = LSM:Fetch("font", cfg.iconDurationFont)
-              if font then
-                durationFont = font
-              end
-            end
-            mFrame.duration:SetFont(durationFont, durationFontSize, durationOutline)
-            ApplyTextShadow(mFrame.duration, cfg.iconDurationShadow)
-            mFrame.duration:SetTextColor(dc.r, dc.g, dc.b, dc.a)
-            
-            -- Get decimals setting for formatting
-            local decimals = cfg.durationDecimals or 1
-            
-            if active and durationFontString then
-              if durationFontString.GetAuraInfo then
-                -- Has GetAuraInfo - use C_UnitAuras.GetAuraDurationRemaining for secret-safe text
-                local auraID, unit = durationFontString:GetAuraInfo()
-                if auraID and unit then
-                  -- Validate the aura still exists before GetAuraDurationRemaining
-                  -- (calling with a stale auraID is the crash risk, not the call itself).
-                  local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, auraID)
-                  if auraData then
-                    mFrame.duration:SetFormattedText(DURATION_FMT[decimals] or "%.1f",
-                      C_UnitAuras.GetAuraDurationRemaining(unit, auraID))
-                  else
-                    mFrame.duration:SetFormattedText(DURATION_FMT[decimals] or "%.1f", durationFontString:GetValue())
-                  end
-                else
-                  mFrame.duration:SetFormattedText(DURATION_FMT[decimals] or "%.1f", durationFontString:GetValue())
-                end
-              elseif durationFontString.GetValue then
-                -- StatusBar or wrapper - pass value directly (secret-safe via SetText)
-                mFrame.duration:SetFormattedText(DURATION_FMT[decimals] or "%.1f", durationFontString:GetValue())
-              elseif durationFontString.GetText then
-                -- FontString - use GetText
-                mFrame.duration:SetText(durationFontString:GetText())
-              end
-              mFrame.duration:Show()
-            elseif usePreviewValue then
-              -- Preview mode - show "0" as placeholder
-              mFrame.duration:SetText("0")
-              mFrame.duration:Show()
-            else
-              mFrame.duration:SetText("")
-              mFrame.duration:Hide()
-            end
-          else
-            mFrame.duration:Hide()
-          end
-          
-          -- Editing text (show when options open and free mode enabled)
-          if not mFrame.editingText then
-            mFrame.editingText = mFrame:CreateFontString(nil, "OVERLAY")
-            mFrame.editingText:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
-            mFrame.editingText:SetPoint("TOP", mFrame, "BOTTOM", 0, -2)
-            mFrame.editingText:SetTextColor(1, 0.8, 0, 1)
-          end
-          
-          if optionsOpen and freeMode then
-            mFrame.editingText:SetText("Stack " .. i)
-            mFrame.editingText:Show()
-          else
-            mFrame.editingText:Hide()
-          end
-          
-          -- Show frame visibility logic
-          -- Show when: options open, OR active, OR showDesatBg is enabled (always show inactive icons)
-          local showDesatBg = cfg.iconMultiShowDesatBg
-          if showDesatBg == nil then showDesatBg = true end
-          
-          if cfg.enabled and (optionsOpen or active or showDesatBg) then
-            SafeShow(mFrame)
-          else
-            SafeHide(mFrame)
-          end
-        end
-      end
-      
-      -- Hide any extra frames if maxStacks decreased
-      if multiIconFrames[barNumber] then
-        for i = maxStacks + 1, #multiIconFrames[barNumber] do
-          SafeHide(multiIconFrames[barNumber][i])
-        end
-      end
-      
-      return  -- Done with multi-icon mode
-    end
-    
-    -- ═══════════════════════════════════════════════════════════════════
-    -- REGULAR ICON MODE
-    -- ═══════════════════════════════════════════════════════════════════
-    -- Hide multi-icon frames if switching back to regular mode
-    HideMultiIconFrames(barNumber)
-    
-    -- Hide bar elements
-    SafeHide(barFrame)
-    SafeHide(textFrame)
-    SafeHide(durationFrame)
-    SafeHide(nameFrame)
-    SafeHide(barIconFrame)
-    
-    -- Set icon texture with multiple fallbacks
-    if iconTexture then
-      iconFrame.icon:SetTexture(iconTexture)
-    elseif barConfig.tracking.iconTextureID then
-      iconFrame.icon:SetTexture(barConfig.tracking.iconTextureID)
-    elseif barConfig.tracking.spellID then
-      local texture = C_Spell.GetSpellTexture(barConfig.tracking.spellID)
-      if texture then
-        iconFrame.icon:SetTexture(texture)
-      end
-    end
-    
-    -- Apply icon zoom
-    local zoom = cfg.iconZoom or 0
-    local minCoord = 0.08 + (zoom * 0.42)  -- 0.08 to 0.50
-    local maxCoord = 0.92 - (zoom * 0.42)  -- 0.92 to 0.50
-    iconFrame.icon:SetTexCoord(minCoord, maxCoord, minCoord, maxCoord)
-    
-    -- Show/hide icon texture based on iconShowTexture
-    -- SAFETY: Also verify bar is enabled (prevents ghost icons from deleted bars)
-    if cfg.iconShowTexture == false or not barConfig.tracking.enabled then
-      iconFrame.icon:Hide()
-      iconFrame.background:Hide()
-    else
-      iconFrame.icon:Show()
-    end
-    
-    -- Use cached optionsOpen from function start for preview mode
-    local showPreview = optionsOpen and (not active or previewMode)
-    
-    -- Update stacks text (SetText handles secret values)
-    if cfg.iconShowStacks then
-      local stackAnchor = cfg.iconStackAnchor or "TOPRIGHT"
-      local stackText
-      local sc = cfg.iconStackColor or {r=1, g=1, b=1, a=1}
-      
-      -- Determine which text element to use
-      if stackAnchor == "FREE" then
-        stackText = iconFrame.stacksFrame.text
-        iconFrame.stacks:Hide()
-        iconFrame.stacksFrame:Show()
-      else
-        stackText = iconFrame.stacks
-        iconFrame.stacksFrame:Hide()
-        iconFrame.stacks:Show()
-      end
-      
-      -- Show stacks - preview, active, or inactive
-      if showPreview then
-        local previewStackCount = math_max(1, math_floor((maxStacks or 3) * (previewStacks or 0.5)))
-        stackText:SetText(previewStackCount)
-      elseif active and stacks then
-        stackText:SetText(stacks)
-      else
-        stackText:SetText("0")
-      end
-      stackText:SetTextColor(sc.r, sc.g, sc.b, sc.a)
-    else
-      iconFrame.stacks:Hide()
-      iconFrame.stacksFrame:Hide()
-    end
-    
-    -- Update duration text (pass secret value directly)
-    -- durationFontString can be FontString (GetText), StatusBar (GetValue), or wrapper with GetAuraInfo
-    if cfg.iconShowDuration then
-      local dc = cfg.iconDurationColor or {r=1, g=1, b=1, a=1}
-      local decimals = cfg.durationDecimals or 1
-      
-      -- Store decimals on frame for OnUpdate access
-      iconFrame.storedDecimals = decimals
-      
-      if showPreview then
-        -- Preview mode - show sample duration
-        local maxDuration = barConfig.tracking.maxDuration or 30
-        local pct = previewStacks or 0.5
-        local previewValue = maxDuration * pct
-        iconFrame.duration:SetText(string_format(DURATION_FMT[decimals] or "%.1f", previewValue))
-        iconFrame:SetScript("OnUpdate", nil)
-        iconFrame.durationActive = false
-        iconFrame.durationSource = nil
-      elseif durationFontString and durationFontString.GetAuraInfo then
-        -- Has GetAuraInfo - use DurationObject for auto-updating countdown
-        local auraID, unit = durationFontString:GetAuraInfo()
-        if auraID and unit and active then
-          -- Store source for OnUpdate to get fresh aura info
-          iconFrame.durationSource = durationFontString
-          iconFrame.durationActive = true
-          
-          -- Set up OnUpdate to poll GetRemainingDuration() with fresh DurationObject
-          if not iconFrame.durationOnUpdate then
-            iconFrame.durationOnUpdate = function(self, elapsed)
-              self.durationElapsed = (self.durationElapsed or 0) + elapsed
-              if self.durationElapsed < 0.05 then return end  -- 20fps
-              self.durationElapsed = 0
-
-              if not self.durationActive or not self.durationSource then return end
-
-              -- Get current auraID from source (may have changed due to refresh)
-              local currentAuraID, currentUnit = self.durationSource:GetAuraInfo()
-              if not currentAuraID or not currentUnit then
-                self.duration:SetText("")
-                return
-              end
-
-              -- GetAuraDuration returns nil for gone auras, does not throw — no pcall needed
-              local durObj = C_UnitAuras.GetAuraDuration(currentUnit, currentAuraID)
-              if durObj then
-                -- GetRemainingDuration on valid durObj does not throw — no pcall needed
-                self.duration:SetFormattedText(DURATION_FMT[self.storedDecimals] or "%.1f", durObj:GetRemainingDuration())
-              else
-                self.duration:SetText("")
-              end
-            end
-          end
-          iconFrame:SetScript("OnUpdate", iconFrame.durationOnUpdate)
-
-          -- Initial text set — no pcall, GetAuraDuration returns nil safely
-          local durObj = C_UnitAuras.GetAuraDuration(unit, auraID)
-          if durObj then
-            iconFrame.duration:SetFormattedText(DURATION_FMT[decimals] or "%.1f", durObj:GetRemainingDuration())
-          end
-        else
-          iconFrame.duration:SetText("")
-          iconFrame:SetScript("OnUpdate", nil)
-          iconFrame.durationActive = false
-          iconFrame.durationSource = nil
-        end
-      elseif durationFontString and durationFontString.GetValue then
-        -- It's a StatusBar or wrapper - pass value directly (secret-safe via SetText)
-        iconFrame:SetScript("OnUpdate", nil)
-        iconFrame.durationActive = false
-        iconFrame.durationSource = nil
-        if active then
-          iconFrame.duration:SetFormattedText(DURATION_FMT[decimals] or "%.1f", durationFontString:GetValue())
-        else
-          iconFrame.duration:SetText("")
-        end
-      elseif durationFontString and durationFontString.GetText then
-        -- It's a FontString - use GetText
-        iconFrame:SetScript("OnUpdate", nil)
-        iconFrame.durationActive = false
-        iconFrame.durationSource = nil
-        iconFrame.duration:SetText(durationFontString:GetText())
-      else
-        iconFrame:SetScript("OnUpdate", nil)
-        iconFrame.durationActive = false
-        iconFrame.durationSource = nil
-        iconFrame.duration:SetText("")
-      end
-      iconFrame.duration:SetTextColor(dc.r, dc.g, dc.b, dc.a)
-      iconFrame.duration:Show()
-    else
-      iconFrame:SetScript("OnUpdate", nil)
-      iconFrame.durationActive = false
-      iconFrame.durationSource = nil
-      iconFrame.duration:Hide()
-    end
-    
-    -- Border
-    if cfg.iconShowBorder then
-      local bc = cfg.iconBorderColor or {r=0, g=0, b=0, a=1}
-      iconFrame.background:SetColorTexture(bc.r, bc.g, bc.b, bc.a)
-      iconFrame.background:Show()
-    else
-      iconFrame.background:Hide()
-    end
-    
-    -- Visibility logic
-    local shouldShow = true
-    local hideWhenFadeAlpha = 1.0
-    
-    -- Hide When conditions (but not if options panel is open)
-    if not optionsOpen and ns.CooldownBars and ns.CooldownBars.GetHideWhen then
-      local hideWhen = ns.CooldownBars.GetHideWhen(barConfig)
-      if hideWhen and ns.CooldownBars.EvaluateHideConditions(hideWhen, barConfig.behavior and barConfig.behavior.hideLogic) then
-        local hAlpha = ns.CooldownBars.GetHideWhenAlpha(barConfig)
-        if hAlpha <= 0 then
-          shouldShow = false
-        else
-          hideWhenFadeAlpha = hAlpha
-        end
-      end
-    end
-    if barFrames[barNumber] then barFrames[barNumber]._arcHideWhenAlpha = hideWhenFadeAlpha end
-    
-    -- Hide when inactive (but not if options panel is open for preview)
-    if not active and barConfig.behavior.hideWhenInactive and not optionsOpen then
-      shouldShow = false
-    end
-    
-    -- If not active and not preview, clear duration text
-    if not active and not showPreview then
-      iconFrame.duration:SetText("")
-    end
-    
-    if shouldShow and cfg.enabled then
-      SafeShow(iconFrame)
-      if hideWhenFadeAlpha < 1.0 then iconFrame:SetAlpha(hideWhenFadeAlpha) end
-    else
-      SafeHide(iconFrame)
-    end
-    
-    return  -- Exit early for icon mode
-  end
   
   -- ═══════════════════════════════════════════════════════════════════
   -- BAR MODE (existing code)
@@ -3473,10 +2907,19 @@ function ns.Display.UpdateBar(barNumber, stacks, maxStacks, active, durationFont
     local shouldHide = false
     local durationValue = nil
     local decimals = barConfig.display.durationDecimals or 1
-    
+
     -- Store decimals on frame for OnUpdate access
     durationFrame.storedDecimals = decimals
-    
+
+    -- v3.7.2: a DurationTextBinding may be driving this fontstring for a live
+    -- aura countdown. Only the GetAuraInfo-active path (below) binds it; every
+    -- other source/branch sets text manually, so release it unless we are on
+    -- that path (or it overwrites the manual / preview value).
+    local bindingPath = active and durationFontString and durationFontString.GetAuraInfo
+    if not bindingPath and ns.DurationText then
+      ns.DurationText.Unbind(durationFrame.text)
+    end
+
     if showPreview then
       -- Preview mode - show sample duration value, clear OnUpdate
       durationFrame:SetScript("OnUpdate", nil)
@@ -3491,54 +2934,64 @@ function ns.Display.UpdateBar(barNumber, stacks, maxStacks, active, durationFont
       -- Has GetAuraInfo - use DurationObject for auto-updating countdown text
       local auraID, unit = durationFontString:GetAuraInfo()
       if auraID and unit and active then
-        -- Store current aura info for OnUpdate
-        durationFrame.sourceBar = durationFontString
-        durationFrame.isActive = true
+        local durObj = C_UnitAuras.GetAuraDuration(unit, auraID)
+        if ns.DurationText and ns.DurationText.IsSupported() then
+          -- 12.0.7: Blizzard drives the countdown text C-side — no Lua OnUpdate.
+          durationFrame:SetScript("OnUpdate", nil)
+          durationFrame.isActive = false
+          durationFrame.sourceBar = nil
+          if durObj then
+            ns.DurationText.Bind(durationFrame.text, durObj, decimals)
+          else
+            ns.DurationText.Unbind(durationFrame.text)
+          end
+        else
+          -- Fallback (pre-12.0.7): poll GetRemainingDuration() each tick.
+          durationFrame.sourceBar = durationFontString
+          durationFrame.isActive = true
 
-        -- Set up OnUpdate to poll GetRemainingDuration() with fresh DurationObject
-        if not durationFrame.durationOnUpdate then
-          durationFrame.durationOnUpdate = function(self, elapsed)
-            self.elapsed = (self.elapsed or 0) + elapsed
-            if self.elapsed < 0.05 then return end  -- 20fps
-            self.elapsed = 0
+          if not durationFrame.durationOnUpdate then
+            durationFrame.durationOnUpdate = function(self, elapsed)
+              self.elapsed = (self.elapsed or 0) + elapsed
+              if self.elapsed < 0.05 then return end  -- 20fps
+              self.elapsed = 0
 
-            if not self.isActive or not self.sourceBar then
-              self:SetScript("OnUpdate", nil)
-              self.text:SetText("")
-              self:Hide()
-              return
-            end
+              if not self.isActive or not self.sourceBar then
+                self:SetScript("OnUpdate", nil)
+                self.text:SetText("")
+                self:Hide()
+                return
+              end
 
-            local currentAuraID, currentUnit = self.sourceBar:GetAuraInfo()
-            if not currentAuraID or not currentUnit then
-              self:SetScript("OnUpdate", nil)
-              self.isActive = false
-              self.sourceBar = nil
-              self.text:SetText("")
-              self:Hide()
-              return
-            end
+              local currentAuraID, currentUnit = self.sourceBar:GetAuraInfo()
+              if not currentAuraID or not currentUnit then
+                self:SetScript("OnUpdate", nil)
+                self.isActive = false
+                self.sourceBar = nil
+                self.text:SetText("")
+                self:Hide()
+                return
+              end
 
-            local durObj = C_UnitAuras.GetAuraDuration(currentUnit, currentAuraID)
-            if durObj then
-              self.text:SetFormattedText(DURATION_FMT[self.storedDecimals] or "%.1f", durObj:GetRemainingDuration())
-            else
-              self:SetScript("OnUpdate", nil)
-              self.isActive = false
-              self.sourceBar = nil
-              self.text:SetText("")
-              self:Hide()
+              local d = C_UnitAuras.GetAuraDuration(currentUnit, currentAuraID)
+              if d then
+                self.text:SetFormattedText(DURATION_FMT[self.storedDecimals] or "%.1f", d:GetRemainingDuration())
+              else
+                self:SetScript("OnUpdate", nil)
+                self.isActive = false
+                self.sourceBar = nil
+                self.text:SetText("")
+                self:Hide()
+              end
             end
           end
-        end
-        durationFrame:SetScript("OnUpdate", durationFrame.durationOnUpdate)
+          durationFrame:SetScript("OnUpdate", durationFrame.durationOnUpdate)
 
-        -- Initial text set — no pcall, GetAuraDuration returns nil safely
-        local durObj = C_UnitAuras.GetAuraDuration(unit, auraID)
-        if durObj then
-          durationFrame.text:SetFormattedText(DURATION_FMT[decimals] or "%.1f", durObj:GetRemainingDuration())
+          if durObj then
+            durationFrame.text:SetFormattedText(DURATION_FMT[decimals] or "%.1f", durObj:GetRemainingDuration())
+          end
         end
-        
+
         local dc = barConfig.display.durationColor or {r=1, g=1, b=1, a=1}
         durationFrame.text:SetTextColor(dc.r, dc.g, dc.b, dc.a)
         durationFrame:Show()
@@ -3556,6 +3009,7 @@ function ns.Display.UpdateBar(barNumber, stacks, maxStacks, active, durationFont
           shouldHide = true
         end
       else
+        if ns.DurationText then ns.DurationText.Unbind(durationFrame.text) end
         durationFrame:SetScript("OnUpdate", nil)
         durationFrame.isActive = false
         durationFrame.sourceBar = nil
@@ -4204,137 +3658,6 @@ function ns.Display.UpdateDurationBar(barNumber, stacks, maxStacks, active, sour
   if maxStacks < 1 then maxStacks = 10 end
   stacks = stacks or 0
   
-  -- ═══════════════════════════════════════════════════════════════════
-  -- ICON MODE (Duration)
-  -- ═══════════════════════════════════════════════════════════════════
-  if displayType == "icon" then
-    barFrame:Hide()
-    textFrame:Hide()
-    durationFrame:Hide()
-    if nameFrame then nameFrame:Hide() end
-    if barIconFrame then barIconFrame:Hide() end
-    
-    local cfg = barConfig.display
-    
-    -- Set icon texture
-    if iconTexture then
-      iconFrame.icon:SetTexture(iconTexture)
-    elseif barConfig.tracking.iconTextureID then
-      iconFrame.icon:SetTexture(barConfig.tracking.iconTextureID)
-    elseif barConfig.tracking.spellID then
-      local texture = C_Spell.GetSpellTexture(barConfig.tracking.spellID)
-      if texture then
-        iconFrame.icon:SetTexture(texture)
-      end
-    end
-    
-    -- Apply icon zoom
-    local zoom = cfg.iconZoom or 0
-    local minCoord = 0.08 + (zoom * 0.42)
-    local maxCoord = 0.92 - (zoom * 0.42)
-    iconFrame.icon:SetTexCoord(minCoord, maxCoord, minCoord, maxCoord)
-    
-    -- SAFETY: Also verify bar is enabled (prevents ghost icons from deleted bars)
-    if cfg.iconShowTexture == false or not barConfig.tracking.enabled then
-      iconFrame.icon:Hide()
-      iconFrame.background:Hide()
-    else
-      iconFrame.icon:Show()
-    end
-    
-    -- Update stacks text (use secret value from stacksFontString if available)
-    if cfg.iconShowStacks then
-      local stackAnchor = cfg.iconStackAnchor or "TOPRIGHT"
-      local stackText
-      local sc = cfg.iconStackColor or {r=1, g=1, b=1, a=1}
-      
-      if stackAnchor == "FREE" then
-        stackText = iconFrame.stacksFrame.text
-        iconFrame.stacks:Hide()
-        iconFrame.stacksFrame:Show()
-      else
-        stackText = iconFrame.stacks
-        iconFrame.stacksFrame:Hide()
-        iconFrame.stacks:Show()
-      end
-      
-      -- Use stacks from auraInstanceID (passed as secret value) or stacksFontString
-      if active and stacksFontString and stacksFontString.GetText then
-        stackText:SetText(stacksFontString:GetText())
-      elseif active and stacks then
-        stackText:SetText(stacks)
-      else
-        -- Not active - show empty for duration icons
-        stackText:SetText("")
-      end
-      stackText:SetTextColor(sc.r, sc.g, sc.b, sc.a)
-    else
-      iconFrame.stacks:Hide()
-      iconFrame.stacksFrame:Hide()
-    end
-    
-    -- Update duration (use C_UnitAuras.GetAuraDurationRemaining for secret-safe text)
-    -- Use cached optionsOpen from function start
-    local showPreview = optionsOpen and (not active or previewMode)
-    
-    if cfg.iconShowDuration then
-      if showPreview then
-        -- Preview mode - show sample duration
-        local maxDuration = barConfig.tracking.maxDuration or 30
-        local pct = previewStacks or 0.5
-        local previewValue = maxDuration * pct
-        local decimals = cfg.durationDecimals or 1
-        iconFrame.duration:SetText(string_format(DURATION_FMT[decimals] or "%.1f", previewValue))
-        iconFrame.duration:Show()
-      elseif active and sourceBar and sourceBar.GetAuraInfo then
-        -- Has GetAuraInfo - use C_UnitAuras.GetAuraDurationRemaining for secret-safe text
-        local auraID, unit = sourceBar:GetAuraInfo()
-        if auraID and unit then
-          -- Validate aura exists before GetAuraDurationRemaining (stale id is the crash risk)
-          local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, auraID)
-          if auraData then
-            iconFrame.duration:SetText(C_UnitAuras.GetAuraDurationRemaining(unit, auraID))  -- Secret passes directly to SetText
-          elseif sourceBar.GetValue then
-            iconFrame.duration:SetText(sourceBar:GetValue())
-          end
-        elseif sourceBar.GetValue then
-          iconFrame.duration:SetText(sourceBar:GetValue())
-        end
-        iconFrame.duration:Show()
-      elseif active and sourceBar and sourceBar.GetValue then
-        -- Fallback: pass raw value through (secret-safe via SetText)
-        iconFrame.duration:SetText(sourceBar:GetValue())
-        iconFrame.duration:Show()
-      else
-        -- Not active - hide duration
-        iconFrame.duration:SetText("")
-        iconFrame.duration:Hide()
-      end
-      local dc = cfg.iconDurationColor or {r=1, g=1, b=1, a=1}
-      iconFrame.duration:SetTextColor(dc.r, dc.g, dc.b, dc.a)
-    else
-      iconFrame.duration:Hide()
-    end
-    
-    -- Border
-    if cfg.iconShowBorder then
-      local bc = cfg.iconBorderColor or {r=0, g=0, b=0, a=1}
-      iconFrame.background:SetColorTexture(bc.r, bc.g, bc.b, bc.a)
-      iconFrame.background:Show()
-    else
-      iconFrame.background:Hide()
-    end
-    
-    -- Visibility already determined at function start - just show if enabled
-    if shouldShow and cfg.enabled then
-      iconFrame:Show()
-      iconFrame:SetAlpha(1)  -- Always full opacity for duration icons
-    else
-      iconFrame:Hide()
-    end
-    
-    return
-  end
   
   -- ═══════════════════════════════════════════════════════════════════
   -- BAR MODE (Duration) - SECRET VALUE PASSTHROUGH
@@ -4531,39 +3854,49 @@ function ns.Display.UpdateDurationBar(barNumber, stacks, maxStacks, active, sour
       local dc = barConfig.display.durationColor or {r=1, g=1, b=1, a=1}
 
       if durationFrame and showDuration then
-        durationFrame.storedDecimals = decimals
-        durationFrame.sourceBar = sourceBar
-        durationFrame.isActive = true
-
-        if not durationFrame.totemDurationOnUpdate then
-          durationFrame.totemDurationOnUpdate = function(self, elapsed)
-            self.elapsed = (self.elapsed or 0) + elapsed
-            if self.elapsed < 0.1 then return end  -- 10 fps
-            self.elapsed = 0
-            if not self.isActive or not self.sourceBar then
-              self:SetScript("OnUpdate", nil)
-              self.text:SetText("")
-              self:Hide()
-              return
-            end
-            -- GetDurationObject returns nil when slot inactive (API returns nil, not zero-span)
-            local currentDurObj = self.sourceBar:GetDurationObject()
-            if currentDurObj then
-              self.text:SetFormattedText(DURATION_FMT[self.storedDecimals] or "%.1f",
-                currentDurObj:GetRemainingDuration())
-            else
-              self:SetScript("OnUpdate", nil)
-              self.isActive = false
-              self.sourceBar = nil
-              self.text:SetText("")
-              self:Hide()
-            end
-          end
-        end
-
-        durationFrame:SetScript("OnUpdate", durationFrame.totemDurationOnUpdate)
         durationFrame.text:SetTextColor(dc.r, dc.g, dc.b, dc.a)
         durationFrame:Show()
+
+        if ns.DurationText and ns.DurationText.IsSupported() then
+          -- 12.0.7: Blizzard drives the countdown text C-side — no Lua OnUpdate.
+          durationFrame.isActive = false
+          durationFrame.sourceBar = nil
+          durationFrame:SetScript("OnUpdate", nil)
+          ns.DurationText.Bind(durationFrame.text, durObj, decimals)
+        else
+          -- Fallback (pre-12.0.7): poll GetRemainingDuration on the totem durObj.
+          durationFrame.storedDecimals = decimals
+          durationFrame.sourceBar = sourceBar
+          durationFrame.isActive = true
+
+          if not durationFrame.totemDurationOnUpdate then
+            durationFrame.totemDurationOnUpdate = function(self, elapsed)
+              self.elapsed = (self.elapsed or 0) + elapsed
+              if self.elapsed < 0.1 then return end  -- 10 fps
+              self.elapsed = 0
+              if not self.isActive or not self.sourceBar then
+                self:SetScript("OnUpdate", nil)
+                self.text:SetText("")
+                self:Hide()
+                return
+              end
+              -- GetDurationObject returns nil when slot inactive (API returns nil, not zero-span)
+              local currentDurObj = self.sourceBar:GetDurationObject()
+              if currentDurObj then
+                self.text:SetFormattedText(DURATION_FMT[self.storedDecimals] or "%.1f",
+                  currentDurObj:GetRemainingDuration())
+              else
+                self:SetScript("OnUpdate", nil)
+                self.isActive = false
+                self.sourceBar = nil
+                self.text:SetText("")
+                self:Hide()
+              end
+            end
+          end
+
+          durationFrame:SetScript("OnUpdate", durationFrame.totemDurationOnUpdate)
+        end
       end
 
       barFrame.bar:SetStatusBarColor(baseColor.r, baseColor.g, baseColor.b, baseColor.a or 1)
@@ -4580,6 +3913,7 @@ function ns.Display.UpdateDurationBar(barNumber, stacks, maxStacks, active, sour
         durationFrame.isActive = false
         durationFrame.sourceBar = nil
         durationFrame:SetScript("OnUpdate", nil)
+        if ns.DurationText then ns.DurationText.Unbind(durationFrame.text) end
         durationFrame:Hide()
       end
       barFrame.bar:SetAlpha(1)
@@ -4909,14 +4243,24 @@ function ns.Display.UpdateDurationBar(barNumber, stacks, maxStacks, active, sour
     textFrame.text:SetTextColor(tc.r, tc.g, tc.b, tc.a)
   end
   
-  -- Duration text - use C_UnitAuras.GetAuraDurationRemaining for secret-safe text
+  -- Duration text - DurationTextBinding drives it C-side when supported
   if barConfig.display.showDuration and durationFrame then
     local decimals = barConfig.display.durationDecimals or 1
     local dc = barConfig.display.durationColor or {r=1, g=1, b=1, a=1}
-    
+
     -- Store decimals on frame for OnUpdate access
     durationFrame.storedDecimals = decimals
-    
+
+    -- v3.7.2: a DurationTextBinding may be driving this fontstring (Blizzard
+    -- writes its text C-side) for a live totem OR aura countdown. Every other
+    -- branch below sets the text manually (preview, fallback, inactive) — so
+    -- release the binding unless this update IS a live durObj countdown, or it
+    -- overwrites them (e.g. blanking the options preview value).
+    local bindingPath = active and sourceBar and (sourceBar.GetTotemInfo or sourceBar.GetAuraInfo)
+    if not bindingPath and ns.DurationText then
+      ns.DurationText.Unbind(durationFrame.text)
+    end
+
     if showPreview then
       -- Preview mode - show sample duration value
       local pct = previewStacks or 0.5
@@ -4938,57 +4282,70 @@ function ns.Display.UpdateDurationBar(barNumber, stacks, maxStacks, active, sour
       -- (do nothing - totem polling handles duration text updates)
     elseif active and sourceBar and sourceBar.GetAuraInfo then
       -- Use DurationObject for auto-updating countdown text
-      -- Pattern: Get fresh auraID from sourceBar each frame to detect refreshes
       local auraID, unit = sourceBar:GetAuraInfo()
       if auraID and unit then
-        -- Store current aura info for OnUpdate
-        durationFrame.sourceBar = sourceBar
-        durationFrame.isActive = true
+        local durObj = C_UnitAuras.GetAuraDuration(unit, auraID)
+        if ns.DurationText and ns.DurationText.IsSupported() then
+          -- 12.0.7: Blizzard drives the countdown text C-side — no Lua OnUpdate.
+          -- Re-binds with a fresh durObj whenever this runs (aura refresh/extend).
+          durationFrame:SetScript("OnUpdate", nil)
+          durationFrame.isActive = false
+          durationFrame.sourceBar = nil
+          if durObj then
+            ns.DurationText.Bind(durationFrame.text, durObj, decimals)
+          else
+            ns.DurationText.Unbind(durationFrame.text)
+          end
+        else
+          -- Fallback (pre-12.0.7): poll GetRemainingDuration() each tick.
+          -- Get fresh auraID from sourceBar each frame to detect refreshes.
+          durationFrame.sourceBar = sourceBar
+          durationFrame.isActive = true
 
-        -- Set up OnUpdate to poll GetRemainingDuration() with fresh DurationObject
-        if not durationFrame.durationOnUpdate then
-          durationFrame.durationOnUpdate = function(self, elapsed)
-            self.elapsed = (self.elapsed or 0) + elapsed
-            if self.elapsed < 0.05 then return end  -- 20fps
-            self.elapsed = 0
+          if not durationFrame.durationOnUpdate then
+            durationFrame.durationOnUpdate = function(self, elapsed)
+              self.elapsed = (self.elapsed or 0) + elapsed
+              if self.elapsed < 0.05 then return end  -- 20fps
+              self.elapsed = 0
 
-            if not self.isActive or not self.sourceBar then
-              self:SetScript("OnUpdate", nil)
-              self.text:SetText("")
-              self:Hide()
-              return
-            end
+              if not self.isActive or not self.sourceBar then
+                self:SetScript("OnUpdate", nil)
+                self.text:SetText("")
+                self:Hide()
+                return
+              end
 
-            local currentAuraID, currentUnit = self.sourceBar:GetAuraInfo()
-            if not currentAuraID or not currentUnit then
-              self:SetScript("OnUpdate", nil)
-              self.isActive = false
-              self.sourceBar = nil
-              self.text:SetText("")
-              self:Hide()
-              return
-            end
+              local currentAuraID, currentUnit = self.sourceBar:GetAuraInfo()
+              if not currentAuraID or not currentUnit then
+                self:SetScript("OnUpdate", nil)
+                self.isActive = false
+                self.sourceBar = nil
+                self.text:SetText("")
+                self:Hide()
+                return
+              end
 
-            local durObj = C_UnitAuras.GetAuraDuration(currentUnit, currentAuraID)
-            if durObj then
-              self.text:SetFormattedText(DURATION_FMT[self.storedDecimals] or "%.1f", durObj:GetRemainingDuration())
-            else
-              self:SetScript("OnUpdate", nil)
-              self.isActive = false
-              self.sourceBar = nil
-              self.text:SetText("")
-              self:Hide()
+              local d = C_UnitAuras.GetAuraDuration(currentUnit, currentAuraID)
+              if d then
+                self.text:SetFormattedText(DURATION_FMT[self.storedDecimals] or "%.1f", d:GetRemainingDuration())
+              else
+                self:SetScript("OnUpdate", nil)
+                self.isActive = false
+                self.sourceBar = nil
+                self.text:SetText("")
+                self:Hide()
+              end
             end
           end
-        end
-        durationFrame:SetScript("OnUpdate", durationFrame.durationOnUpdate)
+          durationFrame:SetScript("OnUpdate", durationFrame.durationOnUpdate)
 
-        -- Initial text set — no pcall, GetAuraDuration returns nil safely
-        local durObj = C_UnitAuras.GetAuraDuration(unit, auraID)
-        if durObj then
-          durationFrame.text:SetFormattedText(DURATION_FMT[decimals] or "%.1f", durObj:GetRemainingDuration())
+          if durObj then
+            durationFrame.text:SetFormattedText(DURATION_FMT[decimals] or "%.1f", durObj:GetRemainingDuration())
+          end
         end
       else
+        -- No aura info: manual fallback value; release any binding first.
+        if ns.DurationText then ns.DurationText.Unbind(durationFrame.text) end
         durationFrame.text:SetFormattedText(DURATION_FMT[decimals] or "%.1f", sourceBar:GetValue())
         durationFrame:SetScript("OnUpdate", nil)
         durationFrame.isActive = false
@@ -5262,214 +4619,6 @@ function ns.Display.ApplyAppearance(barNumber)
     for _, _gb in ipairs(barFrame.granularBars) do _gb._setupDone = false end
   end
   
-  -- ═══════════════════════════════════════════════════════════════════
-  -- ICON MODE APPEARANCE
-  -- ═══════════════════════════════════════════════════════════════════
-  if displayType == "icon" then
-    -- Hide bar elements
-    barFrame:Hide()
-    textFrame:Hide()
-    durationFrame:Hide()
-    if nameFrame then nameFrame:Hide() end
-    if barIconFrame then barIconFrame:Hide() end
-    
-    -- Size
-    local iconSize = cfg.iconSize or 48
-    iconFrame:SetSize(iconSize, iconSize)
-    
-    -- Position
-    if cfg.iconPosition then
-      iconFrame:ClearAllPoints()
-      iconFrame:SetPoint(
-        cfg.iconPosition.point,
-        UIParent,
-        cfg.iconPosition.relPoint,
-        cfg.iconPosition.x,
-        cfg.iconPosition.y
-      )
-    end
-    
-    -- Frame strata and level for icon mode
-    local iconStrata = cfg.barFrameStrata or "MEDIUM"
-    local iconLevel = cfg.barFrameLevel or 10
-    iconFrame:SetFrameStrata(iconStrata)
-    iconFrame:SetFrameLevel(iconLevel)
-    
-    -- Set icon texture from tracking config
-    if barConfig.tracking.iconTextureID then
-      iconFrame.icon:SetTexture(barConfig.tracking.iconTextureID)
-    elseif barConfig.tracking.spellID then
-      -- Fallback: get texture from spellID
-      local texture = C_Spell.GetSpellTexture(barConfig.tracking.spellID)
-      if texture then
-        iconFrame.icon:SetTexture(texture)
-      end
-    end
-    
-    -- Apply icon zoom
-    local zoom = cfg.iconZoom or 0
-    local minCoord = 0.08 + (zoom * 0.42)
-    local maxCoord = 0.92 - (zoom * 0.42)
-    iconFrame.icon:SetTexCoord(minCoord, maxCoord, minCoord, maxCoord)
-    
-    -- Show/hide icon texture based on iconShowTexture
-    -- SAFETY: Also verify bar is enabled (prevents ghost icons from deleted bars)
-    if cfg.iconShowTexture == false or not barConfig.tracking.enabled then
-      iconFrame.icon:Hide()
-      iconFrame.background:Hide()
-    else
-      iconFrame.icon:Show()
-    end
-    
-    -- Stacks font - apply to both regular stacks and free stacks frame
-    local stackFontSize = cfg.iconStackFontSize or 16
-    local stackFont = "Fonts\\FRIZQT__.TTF"
-    if LSM and cfg.iconStackFont then
-      local fetchedFont = LSM:Fetch("font", cfg.iconStackFont)
-      if fetchedFont and fetchedFont ~= "" then
-        stackFont = fetchedFont
-      end
-    end
-    local stackOutline = GetOutlineFlag(cfg.iconStackOutline)
-    
-    -- Apply fonts (regions are ArcUI-created; stackFont is a resolved path)
-    if iconFrame.stacks then
-      iconFrame.stacks:SetFont(stackFont, stackFontSize, stackOutline)
-    end
-    if iconFrame.stacksFrame and iconFrame.stacksFrame.text then
-      iconFrame.stacksFrame.text:SetFont(stackFont, stackFontSize, stackOutline)
-    end
-    ApplyTextShadow(iconFrame.stacks, cfg.iconStackShadow)
-    ApplyTextShadow(iconFrame.stacksFrame.text, cfg.iconStackShadow)
-    
-    -- Stacks anchor position
-    local stackAnchor = cfg.iconStackAnchor or "TOPRIGHT"
-    iconFrame.stacks:ClearAllPoints()
-    
-    -- Stack text is always draggable unless explicitly locked
-    local stackDraggable = not cfg.iconStackLocked
-    iconFrame.stacksFrame:EnableMouse(stackDraggable)
-    
-    if stackAnchor == "FREE" then
-      -- FREE mode - use separate movable frame
-      iconFrame.stacks:Hide()
-      
-      -- Position free stacks frame
-      iconFrame.stacksFrame:ClearAllPoints()
-      if cfg.iconStackPosition then
-        iconFrame.stacksFrame:SetPoint(
-          cfg.iconStackPosition.point,
-          UIParent,
-          cfg.iconStackPosition.relPoint,
-          cfg.iconStackPosition.x,
-          cfg.iconStackPosition.y
-        )
-      else
-        -- Default position: CENTER of icon
-        iconFrame.stacksFrame:SetPoint("CENTER", iconFrame, "CENTER", 0, 0)
-      end
-      
-      -- Apply strata and level to stacks frame (use icon strata as default)
-      local stackStrata = cfg.iconStackStrata or iconStrata
-      local stackLevel = cfg.iconStackLevel or (iconLevel + 20)
-      iconFrame.stacksFrame:SetFrameStrata(stackStrata)
-      iconFrame.stacksFrame:SetFrameLevel(stackLevel)
-      
-      -- Show stacks frame if stacks enabled
-      if cfg.iconShowStacks then
-        iconFrame.stacksFrame:Show()
-      else
-        iconFrame.stacksFrame:Hide()
-      end
-    else
-      -- Anchored modes - use regular stacks text
-      iconFrame.stacksFrame:Hide()
-      
-      if stackAnchor == "TOPRIGHT" then
-        iconFrame.stacks:SetPoint("TOPRIGHT", iconFrame, "TOPRIGHT", -2, -2)
-      elseif stackAnchor == "TOPLEFT" then
-        iconFrame.stacks:SetPoint("TOPLEFT", iconFrame, "TOPLEFT", 2, -2)
-      elseif stackAnchor == "BOTTOMRIGHT" then
-        iconFrame.stacks:SetPoint("BOTTOMRIGHT", iconFrame, "BOTTOMRIGHT", -2, 2)
-      elseif stackAnchor == "BOTTOMLEFT" then
-        iconFrame.stacks:SetPoint("BOTTOMLEFT", iconFrame, "BOTTOMLEFT", 2, 2)
-      elseif stackAnchor == "TOPRIGHT_OUTER" then
-        iconFrame.stacks:SetPoint("BOTTOMLEFT", iconFrame, "TOPRIGHT", 2, 2)
-      elseif stackAnchor == "TOPLEFT_OUTER" then
-        iconFrame.stacks:SetPoint("BOTTOMRIGHT", iconFrame, "TOPLEFT", -2, 2)
-      elseif stackAnchor == "BOTTOMRIGHT_OUTER" then
-        iconFrame.stacks:SetPoint("TOPLEFT", iconFrame, "BOTTOMRIGHT", 2, -2)
-      elseif stackAnchor == "BOTTOMLEFT_OUTER" then
-        iconFrame.stacks:SetPoint("TOPRIGHT", iconFrame, "BOTTOMLEFT", -2, -2)
-      elseif stackAnchor == "CENTER" then
-        iconFrame.stacks:SetPoint("CENTER", iconFrame, "CENTER", 0, 0)
-      end
-      
-      if cfg.iconShowStacks then
-        iconFrame.stacks:Show()
-      else
-        iconFrame.stacks:Hide()
-      end
-    end
-    
-    -- Duration font
-    local durationFontSize = cfg.iconDurationFontSize or 14
-    local durationOutline = GetOutlineFlag(cfg.iconDurationOutline)
-    local durationFont = "Fonts\\FRIZQT__.TTF"
-    if LSM and cfg.iconDurationFont then
-      local fetchedFont = LSM:Fetch("font", cfg.iconDurationFont)
-      if fetchedFont and fetchedFont ~= "" then
-        durationFont = fetchedFont
-      end
-    end
-    
-    -- Apply font (region is ArcUI-created; durationFont is a resolved path)
-    if iconFrame.duration then
-      iconFrame.duration:SetFont(durationFont, durationFontSize, durationOutline)
-    end
-    ApplyTextShadow(iconFrame.duration, cfg.iconDurationShadow)
-    
-    -- Border
-    if cfg.iconShowBorder then
-      local bc = cfg.iconBorderColor or {r=0, g=0, b=0, a=1}
-      iconFrame.background:SetColorTexture(bc.r, bc.g, bc.b, bc.a)
-      iconFrame.background:Show()
-    else
-      iconFrame.background:Hide()
-    end
-    
-    -- Movability
-    iconFrame:EnableMouse(true)
-    
-    -- Smart delete button positioning
-    -- Attach to the most prominent visible element
-    if iconFrame.deleteButton then
-      iconFrame.deleteButton:ClearAllPoints()
-      
-      local iconHidden = (cfg.iconShowTexture == false)
-      local stacksInFreeMode = (cfg.iconStackAnchor == "FREE")
-      local stackFontSize = cfg.iconStackFontSize or 16
-      local iconSize = cfg.iconSize or 48
-      
-      if iconHidden and stacksInFreeMode and cfg.iconShowStacks then
-        -- Icon hidden, stacks in free mode - attach x to stacks frame
-        iconFrame.deleteButton:SetPoint("TOPRIGHT", iconFrame.stacksFrame, "TOPRIGHT", 6, 6)
-      elseif stacksInFreeMode and cfg.iconShowStacks and stackFontSize > iconSize then
-        -- Stacks font larger than icon - attach to stacks frame
-        iconFrame.deleteButton:SetPoint("TOPRIGHT", iconFrame.stacksFrame, "TOPRIGHT", 6, 6)
-      else
-        -- Default: attach to icon frame
-        iconFrame.deleteButton:SetPoint("TOPRIGHT", iconFrame, "TOPRIGHT", 0, 0)
-      end
-    end
-    
-    -- Show icon frame if enabled
-    if cfg.enabled then
-      iconFrame:Show()
-    end
-    
-    return  -- Exit early for icon mode
-  end
   
   -- ═══════════════════════════════════════════════════════════════════
   -- BAR MODE APPEARANCE (existing code below)

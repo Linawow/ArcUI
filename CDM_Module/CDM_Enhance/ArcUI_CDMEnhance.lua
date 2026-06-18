@@ -9913,9 +9913,12 @@ local function RefreshCombatOnlyGlows()
   for cdID, data in pairs(enhancedFrames) do
     if data and data.frame then
       local frame = data.frame
-      local cfg = GetIconSettings(cdID)
+      -- Frame fast-path (== GetIconSettings, but cache-hit) + reuse the cached
+      -- state-visuals table instead of re-allocating ~40 fields per frame just to
+      -- find the handful with combat-only glows.
+      local cfg = GetEffectiveIconSettingsForFrame(frame)
       if cfg then
-        local stateVisuals = GetEffectiveStateVisuals(cfg)
+        local stateVisuals = frame._arcCachedStateVisuals
         if stateVisuals and stateVisuals.readyGlow and stateVisuals.readyGlowCombatOnly then
           -- This icon has combat-only glow enabled
           if inCombat then
@@ -10082,7 +10085,11 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         if data.frame then
           local cfg = GetEffectiveIconSettingsForFrame(data.frame)
           if cfg then
-            local sv = GetEffectiveStateVisuals(cfg)
+            -- Reuse the cached state-visuals (GetEffectiveIconSettingsForFrame just
+            -- refreshed it) instead of re-allocating a ~40-field table per frame
+            -- that we only nil-check and discard — that alloc was a GC burst at
+            -- exactly the combat-drop moment.
+            local sv = data.frame._arcCachedStateVisuals
             local ignAura = (cfg.auraActiveState and cfg.auraActiveState.ignoreAuraOverride)
                          or (cfg.cooldownSwipe and cfg.cooldownSwipe.ignoreAuraOverride)
             if sv or ignAura then
@@ -10090,6 +10097,17 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
               data.frame._arcTargetAlpha = nil
               data.frame._arcEnforceReadyAlpha = nil
               ApplyCooldownStateVisuals(data.frame, cfg, cfg.alpha or 1.0)
+            end
+            -- Re-assert reverse-swipe-while-aura. CDM resets the swipe direction on
+            -- its post-combat refresh, and the aura-transition hook only fires on a
+            -- transition — so an aura already active before combat ended never gets
+            -- re-reversed. Re-derive from the LIVE aura state (covers reverseWhileAura
+            -- frames even when they have no state visuals, so it's outside the gate).
+            local swipe = cfg.cooldownSwipe
+            if swipe and swipe.reverseWhileAura and data.frame.Cooldown then
+              local auraActive = (data.frame._arcAuraActive == true)
+                or HasAuraInstanceID(data.frame.auraInstanceID) or (data.frame.totemData ~= nil)
+              data.frame.Cooldown:SetReverse((swipe.reverse == true) or auraActive)
             end
           end
         end
@@ -10101,13 +10119,22 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         if data.frame then
           local cfg = GetEffectiveIconSettingsForFrame(data.frame)
           if cfg then
-            local sv = GetEffectiveStateVisuals(cfg)
+            -- Reuse cached state-visuals (no per-frame table re-allocation).
+            local sv = data.frame._arcCachedStateVisuals
             local ignAura = (cfg.auraActiveState and cfg.auraActiveState.ignoreAuraOverride)
                          or (cfg.cooldownSwipe and cfg.cooldownSwipe.ignoreAuraOverride)
             if sv or ignAura then
               data.frame._arcTargetAlpha = nil
               data.frame._arcEnforceReadyAlpha = nil
               ApplyCooldownStateVisuals(data.frame, cfg, cfg.alpha or 1.0)
+            end
+            -- Re-assert reverse-swipe-while-aura (see the +0.1s pass) on the later
+            -- straggler wave too, in case CDM's reset lands after the first pass.
+            local swipe = cfg.cooldownSwipe
+            if swipe and swipe.reverseWhileAura and data.frame.Cooldown then
+              local auraActive = (data.frame._arcAuraActive == true)
+                or HasAuraInstanceID(data.frame.auraInstanceID) or (data.frame.totemData ~= nil)
+              data.frame.Cooldown:SetReverse((swipe.reverse == true) or auraActive)
             end
           end
         end

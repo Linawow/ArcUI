@@ -2147,35 +2147,6 @@ function ns.TrackingOptions.GetIconSetupTable()
         width = "full"
       },
       
-      createIconBtn = {
-        type = "execute",
-        name = "Create Icon",
-        desc = "Create an icon for this aura. Works with both Tracked Buffs and Tracked Bars.",
-        func = function()
-          if not selectedCatalogEntry then return end
-          local entry = GetSelectedCatalogEntry()
-          
-                    -- CDM entries
-          local success, result = ns.Catalog.CreateIcon(selectedCatalogEntry, 10, {GetCurrentSpecIndex()})
-          if success then
-            print(string.format("|cff00ccffArc UI|r: Created icon #%d - |cffFF6600Please configure Max Stacks|r", result))
-            selectedCatalogEntry = nil
-          else
-            print("|cff00ccffArc UI|r: " .. (result or "Failed"))
-          end
-          LibStub("AceConfigRegistry-3.0"):NotifyChange("ArcUI")
-        end,
-        order = 10,
-        width = 1.2,
-        hidden = function() return not selectedCatalogEntry end,
-        disabled = function()
-          if not selectedCatalogEntry then return true end
-          local entry = GetSelectedCatalogEntry()
-          -- Allow both Tracked Buffs AND Tracked Bars for icons
-          return not entry or (not entry.isTrackedBuff and not entry.isTrackedBar)
-        end
-      },
-      
       activeIconsHeader = {
         type = "header",
         name = "Active Icons",

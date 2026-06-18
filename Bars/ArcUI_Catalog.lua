@@ -742,7 +742,7 @@ function ns.Catalog.CreateArcUIDisplay(cooldownID, displayType, options)
   cfg.tracking.displaySpellID = entry.displaySpellID or entry.spellID
   cfg.tracking.iconTextureID = entry.icon
   cfg.tracking.cooldownID = cooldownID
-  cfg.display.displayType = displayType
+  cfg.display.displayType = "bar"  -- icon-display mode retired; all ArcUI bars are "bar"
   cfg.display.enabled = true
   
   -- Only set these if explicitly provided (no defaults - user must configure)
@@ -780,14 +780,6 @@ function ns.Catalog.CreateArcUIDisplay(cooldownID, displayType, options)
   -- For duration bars, enable duration text by default
   if options.useDurationBar then
     cfg.display.showDuration = true
-  end
-  
-  -- For icons, enable stacks display and set anchor
-  if displayType == "icon" then
-    cfg.display.iconShowStacks = true  -- Show stack count by default
-    if options.iconStackAnchor then
-      cfg.display.iconStackAnchor = options.iconStackAnchor
-    end
   end
   
   -- Set up behavior
@@ -864,15 +856,6 @@ function ns.Catalog.CreateDurationBar(cooldownID, maxDuration, specs)
     useDurationBar = true,
     maxDuration = maxDuration or 30,
     showOnSpecs = specs,
-  })
-end
-
-function ns.Catalog.CreateIcon(cooldownID, maxStacks, specs)
-  return ns.Catalog.CreateArcUIDisplay(cooldownID, "icon", {
-    sourceType = "icon",
-    -- Don't pass maxStacks - force user to configure
-    showOnSpecs = specs,
-    iconStackAnchor = "TOPLEFT_OUTER",  -- Default to outer position
   })
 end
 

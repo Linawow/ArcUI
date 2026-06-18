@@ -342,6 +342,17 @@ local function DispatchAfterShadowUpdate(frame)
   if frame._arcCLHasText and ns.CustomLabel and ns.CustomLabel.UpdateVisibility then
     ns.CustomLabel.UpdateVisibility(frame)
   end
+  -- Dynamic Cooldowns: a charge spell changes its collapse alpha at the depleted
+  -- boundary (last charge spent / first charge restored) WITHOUT frame.Cooldown:
+  -- IsShown() flipping — the recharge swipe stays up across it — so ns.FrameActive
+  -- never fires the layout reflow there. Notify the layout directly (it dedupes on
+  -- the rendered-alpha bucket and only acts for frames in a Dynamic Cooldowns group).
+  if frame._arcIsChargeSpellCached then
+    local DL = ns.CDMGroups and ns.CDMGroups.DynamicLayout
+    if DL and DL.NotifyCooldownCollapseChanged then
+      DL.NotifyCooldownCollapseChanged(frame)
+    end
+  end
 end
 
 local function EnsureShadowCooldown(frame)
@@ -1406,7 +1417,18 @@ local function NewApplyCooldownStateVisuals(frame, cfg, normalAlpha, stateVisual
   if not iconTex then return end
 
   if not stateVisuals then
-    stateVisuals = GetEffectiveStateVisuals(cfg)
+    -- Reuse the frame's already-cached state-visuals when cfg is the frame's own
+    -- cached cfg (identical table ⇒ the cache was computed from it, see
+    -- GetEffectiveIconSettingsForFrame). This is the hot cooldown-event path
+    -- (DispatchAfterShadowUpdate passes frame._arcCfg), so it avoids re-allocating
+    -- the ~40-field state-visuals table on every cooldown state change. Any other
+    -- cfg falls back to a fresh compute. Identity match makes this staleness-proof:
+    -- the cached value is, by construction, exactly GetEffectiveStateVisuals(cfg).
+    if cfg ~= nil and cfg == frame._arcCfg then
+      stateVisuals = frame._arcCachedStateVisuals
+    else
+      stateVisuals = GetEffectiveStateVisuals(cfg)
+    end
   end
 
   local cdID = frame.cooldownID

@@ -605,15 +605,35 @@ local function GetStackDisplay(config, arcID)
             if stacks and stacks > 0 then
                 return stacks, true   -- isCharges=true so chargeText styling applies
             end
-            -- Idle (no stacks accumulated). If Track Stacks is enabled on
-            -- this timer, return 0 as a persistent placeholder so the
-            -- count is always visible — same way normal spell-charge text
-            -- always displays its current count. This makes the stack
-            -- text easy to find and style even before the first proc.
+            -- Stacks are at 0 (idle, or a consume pool emptied).
             local cfg = db.customTimers[arcID]
-            local trackStacks = cfg and cfg.startTrigger
-                and cfg.startTrigger.trackStacks == true
-            if trackStacks then
+            local st  = cfg and cfg.startTrigger
+            -- "Start full": while the timer is IDLE (not running), show the
+            -- configured Initial Stacks as a full pool (e.g. 2/2) instead of 0,
+            -- so the icon reads full before the first cast. Once the timer is
+            -- running, the real pool drives the number (so an emptied running
+            -- pool correctly shows 0, not full).
+            if st and st.startFull and st.trackStacks == true
+               and st.stackMode == "consume" then
+                local running = ns.ArcAurasTimer.IsTimerRunning
+                    and ns.ArcAurasTimer.IsTimerRunning(arcID)
+                if not running then
+                    local init = tonumber(st.initialStacks) or 0
+                    if init > 0 then return init, true end
+                end
+            end
+            -- Honor the chargeText "Hide at 0" toggle: suppress the text rather
+            -- than show a "0". Timer stacks are non-secret real numbers
+            -- (GetStackCount), so this 0-case is secret-safe — unlike item
+            -- charges, which are secret and must never be 0-tested.
+            local tSettings = ArcAuras.GetCachedSettings and ArcAuras.GetCachedSettings(arcID)
+            if tSettings and tSettings.chargeText and tSettings.chargeText.hideAtZero then
+                return nil, false
+            end
+            -- Otherwise, if Track Stacks is enabled, show 0 as a persistent
+            -- placeholder so the count is always visible/stylable before the
+            -- first proc.
+            if st and st.trackStacks == true then
                 return 0, true
             end
             return nil, false

@@ -1,0 +1,12 @@
+# Dev backups / cruft — never commit, never ship.
+*.bak
+*.tmp
+*.orig
+*.swp
+*~
+Thumbs.db
+.DS_Store
+
+# Local Claude Code config + private dev skills — keep out of the public repo.
+# (CLAUDE.md stays tracked as project docs; .pkgmeta already keeps both out of the shipped zip.)
+.claude/

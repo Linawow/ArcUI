@@ -277,8 +277,83 @@ local highFreqBars = {}  -- [barNumber] = true
 
 local totemBarNumbers = {}     -- [barNum] = true, for PLAYER_TOTEM_UPDATE
 
--- Hook CDM frame's OnAuraInstanceInfoSet / OnAuraInstanceInfoCleared / OnUnitAuraUpdatedEvent
--- for direct bar updates. Only hooks once per frame.
+-- ===================================================================
+-- v3.7.2 AURA-ENGINE REWORK: auraInstanceID → bars reverse map (per unit)
+-- ===================================================================
+-- CDM frames remain the source of truth for WHICH aura is on a tracked spell
+-- (the OnAuraInstanceInfoSet hook / RefreshData / bind all drive an immediate
+-- UpdateBarBuffInfo). This map exists so the single UNIT_AURA consumer can
+-- refresh ONLY the bars whose specific aura instance changed (O(changed)),
+-- instead of every bar bound to a frame.
+--
+-- SINGLE WRITER: UpdateBarBuffInfo maps the exact instance each bar resolved to
+-- DISPLAY (frame-current, cached, or trackedSpellID cross-spell) via
+-- SetBarAuraMapping. This is authoritative — it doesn't matter how the bar
+-- found its aura, only what it's showing. Per-bar (not per-frame) keying means
+-- two bars on one frame, or a bar showing a cached sibling instance, are all
+-- tracked correctly.
+--
+-- Secret auraInstanceIDs (can occur in instances) cannot be used as table keys,
+-- so those bars are bucketed in secretAuraBars and refreshed on any UNIT_AURA
+-- for their unit — a rare, correctness-preserving fallback.
+local auraEntries   = { player = {}, target = {} }  -- [unit][auraInstanceID] = { [barNum] = true }
+local secretAuraBars = { player = {}, target = {} } -- [unit] = { [barNum] = true }
+
+-- Record (or, with nil aiid, clear) the aura instance a bar is currently
+-- displaying. Removes any previous mapping for the bar first, so it's safe to
+-- call every UpdateBarBuffInfo. `state` is the bar's barStates entry (carries
+-- the previous mapping so cleanup is O(1)).
+local function SetBarAuraMapping(barNumber, state, unit, aiid)
+  local valid = (unit == "player" or unit == "target") and HasAuraInstanceID(aiid)
+  local isSecret = false
+  if valid and issecretvalue and issecretvalue(aiid) then isSecret = true end
+
+  local pu, pa, ps = state._mapUnit, state._mapAiid, state._mapSecret
+
+  -- Is the new mapping the same as the previous one? Compare SECRET-SAFELY:
+  -- only do a numeric == when BOTH ids are plain (non-secret) numbers; never
+  -- compare a secret against a number (that yields a secret boolean → throws).
+  local same = false
+  if valid and pu == unit then
+    if isSecret and ps then
+      same = true                       -- both secret on the same unit: leave as-is
+    elseif (not isSecret) and (not ps) and pa ~= nil then
+      same = (pa == aiid)               -- both plain numbers: safe to compare
+    end
+  end
+  if same then return end
+
+  -- Remove the previous mapping, if any.
+  if pu then
+    if ps then
+      if secretAuraBars[pu] then secretAuraBars[pu][barNumber] = nil end
+    elseif pa ~= nil then
+      local b = auraEntries[pu] and auraEntries[pu][pa]
+      if b then
+        b[barNumber] = nil
+        if not next(b) then auraEntries[pu][pa] = nil end
+      end
+    end
+    state._mapUnit, state._mapAiid, state._mapSecret = nil, nil, nil
+  end
+
+  if not valid then return end
+
+  if isSecret then
+    secretAuraBars[unit][barNumber] = true
+    state._mapUnit, state._mapAiid, state._mapSecret = unit, nil, true
+  else
+    local bucket = auraEntries[unit][aiid]
+    if not bucket then bucket = {}; auraEntries[unit][aiid] = bucket end
+    bucket[barNumber] = true
+    state._mapUnit, state._mapAiid, state._mapSecret = unit, aiid, nil
+  end
+end
+
+-- Hook CDM frame's OnAuraInstanceInfoSet / OnAuraInstanceInfoCleared / RefreshData
+-- for direct bar updates. Only hooks once per frame. Live stack/duration changes
+-- on an already-shown aura are handled by the single UNIT_AURA consumer
+-- (HandleUnitAura) via the reverse map above — NOT by per-frame hooks.
 -- When aura gained → update bar
 -- When aura stack/duration updated → update bar
 -- When aura lost → unregister + update bar to hide
@@ -289,8 +364,8 @@ local function HookCDMFrameForAuraMap(frame, barNumber)
   if not hookedAuraFrames[frame] then
     hookedAuraFrames[frame] = { barNumbers = {} }
 
-    -- OnAuraInstanceInfoSet: fires on real aura gained (player buffs).
-    -- Also sets _arcAuraActive so OnNewTarget knows there's a live aura.
+    -- OnAuraInstanceInfoSet: fires on real aura gained (player buffs/target
+    -- debuffs) — binds WHICH auraInstanceID is on this frame and shows the bar.
     if frame.OnAuraInstanceInfoSet then
       hooksecurefunc(frame, "OnAuraInstanceInfoSet", function(self)
         local hookData = hookedAuraFrames[self]
@@ -302,6 +377,8 @@ local function HookCDMFrameForAuraMap(frame, barNumber)
         -- again — so any deferred "cleared" hide that captured an older token
         -- must abort instead of hiding a still-active aura.
         self._arcAuraToken = (self._arcAuraToken or 0) + 1
+        -- Refresh drives UpdateBarBuffInfo, which (re)maps each bar's resolved
+        -- aura instance into the reverse map for UNIT_AURA targeting.
         for barNum in pairs(hookData.barNumbers) do
           UpdateBarBuffInfo(barNum)
         end
@@ -309,7 +386,6 @@ local function HookCDMFrameForAuraMap(frame, barNumber)
     end
 
     -- OnAuraInstanceInfoCleared: fires on real aura lost (player buffs).
-    -- Clears _arcAuraActive so OnNewTarget stops firing updates.
     if frame.OnAuraInstanceInfoCleared then
       hooksecurefunc(frame, "OnAuraInstanceInfoCleared", function(self)
         local hookData = hookedAuraFrames[self]
@@ -331,43 +407,14 @@ local function HookCDMFrameForAuraMap(frame, barNumber)
       end)
     end
 
-    -- OnNewTarget: handles target debuff stack updates. CDM fires this on every
-    -- target UNIT_AURA — including every debuff stack change on the current target.
-    -- Only processes when _arcAuraActive is true AND auraDataUnit is "target" so
-    -- player buffs (covered by OnUnitAuraUpdatedEvent) don't pay this cost.
-    if frame.OnNewTarget then
-      hooksecurefunc(frame, "OnNewTarget", function(self)
-        if not self._arcAuraActive then return end
-        if self.auraDataUnit ~= "target" then return end
-        local hookData = hookedAuraFrames[self]
-        if not hookData or not next(hookData.barNumbers) then return end
-        for barNum in pairs(hookData.barNumbers) do
-          UpdateBarBuffInfo(barNum)
-        end
-      end)
-    end
-
-    -- OnUnitAuraUpdatedEvent: player buff stack changes (updatedAuraInstanceIDs path).
-    -- PERF: CDM dispatches this multiple times per UNIT_AURA batch (one per stack in the
-    -- same tick). Coalesce with the SHARED _arcRefreshPending flag (this internally calls
-    -- RefreshData too, so the RefreshData hook below would otherwise schedule a second
-    -- redundant update in the same tick) — only the first fire schedules a deferred update.
-    if frame.OnUnitAuraUpdatedEvent then
-      hooksecurefunc(frame, "OnUnitAuraUpdatedEvent", function(self)
-        local hookData = hookedAuraFrames[self]
-        if not hookData or not next(hookData.barNumbers) then return end
-        if self._arcRefreshPending then return end
-        self._arcRefreshPending = true
-        local bars = {}
-        for barNum in pairs(hookData.barNumbers) do bars[barNum] = true end
-        C_Timer.After(0, function()
-          self._arcRefreshPending = false
-          for barNum in pairs(bars) do
-            UpdateBarBuffInfo(barNum)
-          end
-        end)
-      end)
-    end
+    -- NOTE (v3.7.2 rework): the per-frame OnNewTarget and OnUnitAuraUpdatedEvent
+    -- hooks were removed here. Live stack/duration changes on an already-shown
+    -- aura — for BOTH player buffs and target debuffs — are now driven by the
+    -- single UNIT_AURA("player","target") consumer (HandleUnitAura) through the
+    -- auraInstanceID→bars reverse map, so only the bars whose aura actually
+    -- changed get refreshed (was: every bar bound to the frame, fired several
+    -- times per UNIT_AURA batch). RefreshData (below) stays for the same-id
+    -- duration-extend case that fires no UNIT_AURA id.
 
     -- RefreshData: the ONE signal that fires on a same-instance-ID aura refresh.
     -- CDM's SetAuraInstanceInfo only fires OnAuraInstanceInfoSet when the auraInstanceID
@@ -447,7 +494,9 @@ local function HookCDMFrameForAuraMap(frame, barNumber)
     end
   end
 
-  -- Register this bar as using this frame
+  -- Register this bar as using this frame. The reverse map is populated by
+  -- UpdateBarBuffInfo (the single writer) on the bar's next update, which the
+  -- caller triggers right after binding.
   hookedAuraFrames[frame].barNumbers[barNumber] = true
 end
 
@@ -465,6 +514,10 @@ local function ClearAllAuraHookRegistrations()
   end
   wipe(totemBarNumbers)
   wipe(highFreqBars)
+  -- Reverse map is rebuilt as bars re-resolve; barStates (with _map* fields)
+  -- are wiped by the spec-change handler, so just clear the shared tables.
+  for _, t in pairs(auraEntries) do wipe(t) end
+  for _, t in pairs(secretAuraBars) do wipe(t) end
 end
 
 -- Register frame hooks appropriate for the bar's track type
@@ -1243,6 +1296,8 @@ ClearBarState = function(barNumber)
         AllowCDMFrameVisible(state.cachedBarFrame)
       end
     end
+    -- Drop this bar from the auraInstanceID→bar reverse map.
+    SetBarAuraMapping(barNumber, state, nil, nil)
   end
   barStates[barNumber] = nil
 end
@@ -1436,8 +1491,95 @@ local function GetAllBarFrames()
 end
 
 
+-- ===================================================================
+-- CACHED cooldownID → FRAME INDEX  (v3.7.2 aura-engine rework)
+-- ===================================================================
+-- Replaces the per-call GetChildren scans in FindBuffFrameByCooldownID /
+-- FindBarFrameByCooldownID and the O(bars × frames) rescans inside
+-- ValidateAllBarTracking with O(1) lookups. Built ONCE per invalidation from a
+-- single pass over the buff/bar frame collectors (+ grouped frames), and
+-- rebuilt lazily only when marked dirty by an actual frame change:
+--   • FrameController SetCooldownID/ClearCooldownID rebinds
+--   • PLAYER_SPECIALIZATION_CHANGED
+--   • COOLDOWN_VIEWER_DATA_LOADED
+--   • ScanAllCDMIcons completion
+-- Frame-recycle safe: every consumer re-verifies frame.cooldownID == expected
+-- (non-secret) before trusting an indexed frame, since CDM pools frames.
+local cdIndex = {}          -- [cooldownID] = { icon = frame, bar = frame }
+local cdIndexDirty = true
+
+local function RebuildCDMIndex()
+  wipe(cdIndex)
+  -- Icon-side frames (BuffIconCooldownViewer + detached/enhanced/free)
+  local iconFrames = GetAllBuffFrames()
+  if iconFrames then
+    for _, frame in ipairs(iconFrames) do
+      local cdID = GetFrameCooldownID(frame)
+      if cdID then
+        local e = cdIndex[cdID]; if not e then e = {}; cdIndex[cdID] = e end
+        e.icon = frame
+      end
+    end
+  end
+  -- Bar-side frames (BuffBarCooldownViewer + detached/enhanced)
+  local barFrames = GetAllBarFrames()
+  if barFrames then
+    for _, frame in ipairs(barFrames) do
+      local cdID = GetFrameCooldownID(frame)
+      if cdID then
+        local e = cdIndex[cdID]; if not e then e = {}; cdIndex[cdID] = e end
+        e.bar = frame
+      end
+    end
+  end
+  -- Grouped frames (reparented into CDMGroups containers); may be either kind.
+  if ns.CDMGroups and ns.CDMGroups.GetAllGroupedFrames then
+    local grouped = ns.CDMGroups.GetAllGroupedFrames()
+    if grouped then
+      for cdID, data in pairs(grouped) do
+        if data.frame then
+          local e = cdIndex[cdID]; if not e then e = {}; cdIndex[cdID] = e end
+          if data.viewerType == "bar" then
+            if not e.bar then e.bar = data.frame end
+          else
+            if not e.icon then e.icon = data.frame end
+          end
+        end
+      end
+    end
+  end
+  cdIndexDirty = false
+end
+
+local function EnsureCDMIndex()
+  if cdIndexDirty then RebuildCDMIndex() end
+end
+
+local function InvalidateCDMIndex()
+  cdIndexDirty = true
+end
+ns.API.InvalidateCDMIndex = InvalidateCDMIndex
+
+-- Self-heal helpers: when a fallback scan finds a frame the index missed
+-- (timing), record it so the next lookup is O(1) without a full rebuild.
+local function StoreBarIndex(cdID, frame)
+  if frame then local e = cdIndex[cdID]; if not e then e = {}; cdIndex[cdID] = e end; e.bar = frame end
+  return frame
+end
+local function StoreIconIndex(cdID, frame)
+  if frame then local e = cdIndex[cdID]; if not e then e = {}; cdIndex[cdID] = e end; e.icon = frame end
+  return frame
+end
+
+
 local function FindBarFrameByCooldownID(cooldownID)
   if not cooldownID then return nil end
+  -- O(1) fast path via the cached index (recycle-verified).
+  EnsureCDMIndex()
+  local ent = cdIndex[cooldownID]
+  if ent and ent.bar and GetFrameCooldownID(ent.bar) == cooldownID then
+    return ent.bar
+  end
   local frames, err = GetAllBarFrames()
   if err then return nil end
   for _, frame in ipairs(frames) do
@@ -1449,9 +1591,9 @@ local function FindBarFrameByCooldownID(cooldownID)
     if not frameCdID and frame.Icon and frame.Icon.cooldownID then
       frameCdID = frame.Icon.cooldownID
     end
-    if frameCdID == cooldownID then return frame end
+    if frameCdID == cooldownID then return StoreBarIndex(cooldownID, frame) end
   end
-  
+
   -- FALLBACK: Direct scan of BuffBarCooldownViewer
   local viewer = _G["BuffBarCooldownViewer"]
   if viewer then
@@ -1464,24 +1606,31 @@ local function FindBarFrameByCooldownID(cooldownID)
       if not frameCdID and child.Icon and child.Icon.cooldownID then
         frameCdID = child.Icon.cooldownID
       end
-      if frameCdID == cooldownID then return child end
+      if frameCdID == cooldownID then return StoreBarIndex(cooldownID, child) end
     end
   end
-  
+
   return nil
 end
 
 local function FindBuffFrameByCooldownID(cooldownID)
   if not cooldownID then return nil end
-  
+
+  -- O(1) fast path via the cached index (recycle-verified).
+  EnsureCDMIndex()
+  local ent = cdIndex[cooldownID]
+  if ent and ent.icon and GetFrameCooldownID(ent.icon) == cooldownID then
+    return ent.icon
+  end
+
   -- SIMPLE: Use CDMEnhance.FindFrameByCooldownID if available
   if ns.CDMEnhance and ns.CDMEnhance.FindFrameByCooldownID then
     local frame, vType, viewerName = ns.CDMEnhance.FindFrameByCooldownID(cooldownID, "aura")
     if frame and frame.cooldownID == cooldownID then
-      return frame
+      return StoreIconIndex(cooldownID, frame)
     end
   end
-  
+
   -- Scan BuffIconCooldownViewer children
   local viewer = _G["BuffIconCooldownViewer"]
   if viewer then
@@ -1491,10 +1640,10 @@ local function FindBuffFrameByCooldownID(cooldownID)
       if not frameCdID and child.cooldownInfo then
         frameCdID = child.cooldownInfo.cooldownID
       end
-      if frameCdID == cooldownID then return child end
+      if frameCdID == cooldownID then return StoreIconIndex(cooldownID, child) end
     end
   end
-  
+
   -- Check enhanced frames (includes detached ones)
   if ns.CDMEnhance then
     local enhancedFrames = ns.CDMEnhance.GetEnhancedFrames and ns.CDMEnhance.GetEnhancedFrames()
@@ -1507,19 +1656,19 @@ local function FindBuffFrameByCooldownID(cooldownID)
           frameCdID = data.frame.cooldownInfo.cooldownID
         end
         if frameCdID == cooldownID then
-          return data.frame
+          return StoreIconIndex(cooldownID, data.frame)
         end
       end
-      
+
       -- Fallback: Scan all frames checking frame.cooldownID property
       for cdID, frameData in pairs(enhancedFrames) do
         if frameData.frame and frameData.frame.cooldownID == cooldownID then
-          return frameData.frame
+          return StoreIconIndex(cooldownID, frameData.frame)
         end
       end
     end
   end
-  
+
   -- Scan CDMGroups containers (frames reparented for grouping)
   if ns.CDMGroups and ns.CDMGroups.GetAllGroupedFrames then
     local groupedFrames = ns.CDMGroups.GetAllGroupedFrames()
@@ -1531,12 +1680,12 @@ local function FindBuffFrameByCooldownID(cooldownID)
           frameCdID = data.frame.cooldownInfo.cooldownID
         end
         if frameCdID == cooldownID then
-          return data.frame
+          return StoreIconIndex(cooldownID, data.frame)
         end
       end
     end
   end
-  
+
   return nil
 end
 
@@ -1655,130 +1804,27 @@ function ns.API.ValidateAllBarTracking(validCooldownIDs, debugMode)
   
   debugPrint("|cff00CCFF[ValidateAllBarTracking]|r Starting validation...")
   
-  -- 1. Scan BuffIconCooldownViewer (icons)
-  local iconFrames, err = GetAllBuffFrames()
-  if not err then
-    local count = 0
-    for _, frame in ipairs(iconFrames) do
-      local cdID = frame and frame.cooldownID
-      if not cdID and frame and frame.cooldownInfo then
-        cdID = frame.cooldownInfo.cooldownID
-      end
-      -- Handle both numeric CDM IDs and string Arc Aura IDs
-      local isValidCdID = cdID and ((type(cdID) == "number" and cdID > 0) or type(cdID) == "string")
-      if isValidCdID then
-        validCooldownIDs[cdID] = validCooldownIDs[cdID] == "bar" and "both" or "icon"
-        count = count + 1
-      end
+  -- Build validCooldownIDs from the cached cooldownID→frame index in a single
+  -- pass (was five separate full GetChildren scans). "icon"/"bar"/"both" reflect
+  -- which side(s) currently have a live frame; any caller-supplied entries are
+  -- upgraded to "both" the same way the old per-step merge did. The index is
+  -- sourced from the same frame collectors (+ grouped frames) the old steps
+  -- used, so coverage is unchanged — it's just computed once and cached.
+  -- ValidateAllBarTracking is the authoritative re-bind entry point (config
+  -- change / spec / import / login), so rebuild the index fresh here rather
+  -- than trust a possibly-stale cache after CDM reshuffled its frames.
+  RebuildCDMIndex()
+  for cdID, e in pairs(cdIndex) do
+    local kind = (e.icon and e.bar) and "both" or (e.bar and "bar") or "icon"
+    local prev = validCooldownIDs[cdID]
+    if prev == "icon" and kind ~= "icon" then
+      kind = "both"
+    elseif prev == "bar" and kind ~= "bar" then
+      kind = "both"
     end
-    debugPrint(string.format("  Step 1 (GetAllBuffFrames): Added %d icon frames", count))
+    validCooldownIDs[cdID] = kind
   end
-  
-  -- 2. Scan BuffBarCooldownViewer (bars)
-  local barFrames, err2 = GetAllBarFrames()
-  if not err2 then
-    for _, frame in ipairs(barFrames) do
-      local cdID = frame and frame.cooldownID
-      if not cdID and frame and frame.cooldownInfo then
-        cdID = frame.cooldownInfo.cooldownID
-      end
-      if not cdID and frame and frame.Icon and frame.Icon.cooldownID then
-        cdID = frame.Icon.cooldownID
-      end
-      -- Handle both numeric CDM IDs and string Arc Aura IDs
-      local isValidCdID = cdID and ((type(cdID) == "number" and cdID > 0) or type(cdID) == "string")
-      if isValidCdID then
-        if validCooldownIDs[cdID] == "icon" then
-          validCooldownIDs[cdID] = "both"
-        elseif not validCooldownIDs[cdID] then
-          validCooldownIDs[cdID] = "bar"
-        end
-      end
-    end
-  end
-  
-  -- 3. DIRECT SCAN of CDM viewers as fallback (catches frames that got re-added)
-  local viewerNames = {"BuffIconCooldownViewer", "BuffBarCooldownViewer"}
-  for _, viewerName in ipairs(viewerNames) do
-    local viewer = _G[viewerName]
-    if viewer then
-      local children = {viewer:GetChildren()}
-      for _, child in ipairs(children) do
-        local cdID = child.cooldownID
-        if not cdID and child.cooldownInfo then
-          cdID = child.cooldownInfo.cooldownID
-        end
-        if not cdID and child.Icon and child.Icon.cooldownID then
-          cdID = child.Icon.cooldownID
-        end
-        -- Handle both numeric CDM IDs and string Arc Aura IDs
-        local isValidCdID = cdID and ((type(cdID) == "number" and cdID > 0) or type(cdID) == "string")
-        if isValidCdID and not validCooldownIDs[cdID] then
-          if viewerName == "BuffIconCooldownViewer" then
-            validCooldownIDs[cdID] = "icon"
-          else
-            validCooldownIDs[cdID] = "bar"
-          end
-        end
-      end
-    end
-  end
-  
-  -- 4. Also scan CDM API directly for any cooldowns we might have missed
-  if C_CooldownViewer then
-    -- Check all known cooldownIDs from our bars config
-    local db = ns.API.GetDB()
-    if db and db.bars then
-      for barNum = 1, 30 do
-        local barConfig = db.bars[barNum]
-        if barConfig and barConfig.tracking and barConfig.tracking.enabled then
-          local cdID = barConfig.tracking.cooldownID
-          -- Bar tracking uses numeric IDs from user config - keep numeric check
-          if cdID and type(cdID) == "number" and cdID > 0 and not validCooldownIDs[cdID] then
-            -- Check if CDM knows about this cooldown
-            local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(cdID)
-            if info then
-              -- CDM has this cooldown - find which viewer it's in
-              for _, vName in ipairs(viewerNames) do
-                local viewer = _G[vName]
-                if viewer then
-                  local children = {viewer:GetChildren()}
-                  for _, child in ipairs(children) do
-                    local frameCdID = child.cooldownID or (child.cooldownInfo and child.cooldownInfo.cooldownID)
-                    if frameCdID == cdID then
-                      validCooldownIDs[cdID] = vName == "BuffIconCooldownViewer" and "icon" or "bar"
-                      break
-                    end
-                  end
-                end
-                if validCooldownIDs[cdID] then break end
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- 5. Scan CDMGroups containers (frames reparented for grouping)
-  if ns.CDMGroups and ns.CDMGroups.GetAllGroupedFrames then
-    local groupedFrames = ns.CDMGroups.GetAllGroupedFrames()
-    if groupedFrames then
-      local count = 0
-      for cdID, data in pairs(groupedFrames) do
-        -- Handle both numeric CDM IDs and string Arc Aura IDs
-        local isValidCdID = cdID and ((type(cdID) == "number" and cdID > 0) or type(cdID) == "string")
-        if isValidCdID and not validCooldownIDs[cdID] then
-          -- Determine viewer type from data or default to icon
-          local vType = (data.viewerType == "bar") and "bar" or "icon"
-          validCooldownIDs[cdID] = vType
-          count = count + 1
-        end
-      end
-      debugPrint(string.format("  Step 5 (CDMGroups): Added %d grouped frames", count))
-    end
-  end
-  
+
   -- Debug: show total validCooldownIDs
   local totalValid = 0
   for _ in pairs(validCooldownIDs) do totalValid = totalValid + 1 end
@@ -3152,6 +3198,29 @@ UpdateBarBuffInfo = function(barNumber)
       if barFrame then AllowCDMFrameVisible(barFrame) end
     end
   end
+
+  -- ─────────────────────────────────────────────────────────────────
+  -- v3.7.2: maintain the auraInstanceID→bar reverse map from the aura this
+  -- bar actually resolved to display, so the single UNIT_AURA consumer can
+  -- refresh exactly this bar when that instance's stacks/duration change.
+  -- Totem/pet/ground bars are event-driven (PLAYER_TOTEM_UPDATE), not auras.
+  -- ─────────────────────────────────────────────────────────────────
+  local mUnit, mAiid
+  if active and trackType ~= "pet" and trackType ~= "totem" and trackType ~= "ground" then
+    local mapFrame = (sourceType == "bar") and barFrame or frame or barFrame
+    local tSpell = barConfig.tracking.trackedSpellID
+    if tSpell and tSpell > 0 then
+      mAiid = state.trackedAuraInstanceID
+      mUnit = state.trackedAuraUnit
+    elseif trackType == "debuff" then
+      mAiid = state.debuffAuraInstanceID or (mapFrame and mapFrame.auraInstanceID)
+      mUnit = (mapFrame and mapFrame.auraDataUnit) or "target"
+    else
+      mAiid = state.buffAuraInstanceID or (mapFrame and mapFrame.auraInstanceID)
+      mUnit = state.buffAuraUnit or state.detectedUnit or (mapFrame and mapFrame.auraDataUnit) or "player"
+    end
+  end
+  SetBarAuraMapping(barNumber, state, mUnit, mAiid)
 end
 
 -- ===================================================================
@@ -3166,6 +3235,68 @@ UpdateAllBars = function()
 end
 
 -- ===================================================================
+-- SINGLE UNIT_AURA CONSUMER  (v3.7.2 aura-engine rework)
+-- ===================================================================
+-- The one live-refresh signal for already-shown auras. UpdateBarBuffInfo binds
+-- WHICH auraInstanceID each bar displays (SetBarAuraMapping); this consumer
+-- reads UNIT_AURA's updatedAuraInstanceIDs and refreshes ONLY the bars tracking
+-- those instances (O(changed)). Replaces the per-frame OnUnitAuraUpdatedEvent +
+-- OnNewTarget fan-out.
+local function RefreshBarsForUnit(unit)
+  -- Full update / fallback: refresh every bar mapped on this unit.
+  for _aiid, bucket in pairs(auraEntries[unit]) do
+    for barNum in pairs(bucket) do UpdateBarBuffInfo(barNum) end
+  end
+  for barNum in pairs(secretAuraBars[unit]) do
+    UpdateBarBuffInfo(barNum)
+  end
+end
+
+local function HandleUnitAura(unit, updateInfo)
+  local e = auraEntries[unit]
+  if not e then return end
+
+  if not updateInfo or updateInfo.isFullUpdate then
+    RefreshBarsForUnit(unit)
+    return
+  end
+
+  -- Stack/duration changes on tracked instances. auraInstanceID is non-secret
+  -- (per the 12.0 value rules), but guard defensively so a secret id is never
+  -- used as a table key — those bars are covered by the secretAuraBars pass.
+  local updated = updateInfo.updatedAuraInstanceIDs
+  if updated then
+    for _, aiid in ipairs(updated) do
+      if not (issecretvalue and issecretvalue(aiid)) then
+        local bucket = e[aiid]
+        if bucket then
+          for barNum in pairs(bucket) do UpdateBarBuffInfo(barNum) end
+        end
+      end
+    end
+  end
+
+  -- Removed auras: refresh those bars (they go inactive) then drop the mapping.
+  local removed = updateInfo.removedAuraInstanceIDs
+  if removed then
+    for _, aiid in ipairs(removed) do
+      if not (issecretvalue and issecretvalue(aiid)) then
+        local bucket = e[aiid]
+        if bucket then
+          for barNum in pairs(bucket) do UpdateBarBuffInfo(barNum) end
+          e[aiid] = nil
+        end
+      end
+    end
+  end
+
+  -- Secret-id bars on this unit can't be matched by id; refresh on any change.
+  for barNum in pairs(secretAuraBars[unit]) do
+    UpdateBarBuffInfo(barNum)
+  end
+end
+
+-- ===================================================================
 -- EVENT HANDLING
 -- ===================================================================
 local eventFrame = CreateFrame("Frame")
@@ -3176,9 +3307,21 @@ eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 eventFrame:RegisterEvent("PLAYER_TOTEM_UPDATE")
+eventFrame:RegisterEvent("COOLDOWN_VIEWER_DATA_LOADED")
+-- v3.7.2: single live-refresh signal for already-shown auras (player + target).
+eventFrame:RegisterUnitEvent("UNIT_AURA", "player", "target")
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
-  if event == "PLAYER_TOTEM_UPDATE" then
+  if event == "UNIT_AURA" then
+    local unit, updateInfo = ...
+    if unit == "player" or unit == "target" then
+      HandleUnitAura(unit, updateInfo)
+    end
+  elseif event == "COOLDOWN_VIEWER_DATA_LOADED" then
+    -- CDM rebuilt its viewer layout — frame↔cooldownID bindings may have moved.
+    InvalidateCDMIndex()
+    ns.API.ValidateAllBarTracking()
+  elseif event == "PLAYER_TOTEM_UPDATE" then
     if next(totemBarNumbers) then
       for barNum in pairs(totemBarNumbers) do
         UpdateBarBuffInfo(barNum)
@@ -3252,7 +3395,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     
     -- v3.0.0: Clear aura hook registrations on spec change (frames may change)
     ClearAllAuraHookRegistrations()
-    
+    -- v3.7.2: frame↔cooldownID bindings change with spec — drop the cached index.
+    InvalidateCDMIndex()
+
     -- v2.12.0: Release all hidden CDM frame tracking.
     -- CDM will manage its own frame visibility during the transition.
     -- Prevents empty shell bars from becoming visible when AllowCDMFrameVisible
@@ -4088,7 +4233,10 @@ function ns.API.ScanAllCDMIcons()
   end
   
   lastScanTime = GetTime()
-  
+  -- A fresh CDM scan means frames may have been (re)created/repositioned —
+  -- mark the cooldownID→frame index stale so the next lookup rebuilds it.
+  InvalidateCDMIndex()
+
   if ns.devMode then
     local auraCount, cdCount, detachedCount = 0, 0, 0
     for _, data in pairs(cdmIconCache) do
@@ -4322,6 +4470,12 @@ _G.ArcUI_Display = ns.Display
 if ns.FrameController and ns.FrameController.OnFrameRebind then
   ns.FrameController.OnFrameRebind(function(frame, oldCdID, newCdID)
     if not frame then return end
+
+    -- v3.7.2: a rebind changes this frame's cooldownID — drop the cached
+    -- cooldownID→frame index. Affected bars below get cachedFrame=nil and
+    -- re-resolve on their next update, where SetBarAuraMapping fixes their
+    -- reverse-map entry.
+    InvalidateCDMIndex()
 
     -- Invalidate any bar cache pointing at this frame so the next
     -- UpdateAllBars re-resolves against the live cdID → frame mapping.

@@ -325,6 +325,10 @@ local EXCLUDED_DISPLAY_KEYS = {
   readyTextStrata = true,
   -- Auto power profiles state (internal)
   autoPowerColors = true,
+  -- Flat-config behavior/meta keys (castbar uses a flat schema, not .display)
+  presets         = true,
+  hideOutOfCombat = true,
+  hideChannels    = true,
 }
 Presets.EXCLUDED_DISPLAY_KEYS = EXCLUDED_DISPLAY_KEYS
 
@@ -347,22 +351,27 @@ Presets.DeepCopy = DeepCopy
 -- Returns { display = { ... }, topLevel = { ... }, categories = { ... } }
 -- =====================================================================
 function Presets.SnapshotSkin(barConfig, categories)
-  if not barConfig or not barConfig.display then return nil end
+  if not barConfig then return nil end
+  -- Flat configs (e.g. castbar) have no .display sub-table; use the config itself as the source.
+  local displaySrc = barConfig.display or barConfig
+  if not displaySrc then return nil end
   local skin = {
     display = {},
     topLevel = {},
     categories = categories or Presets.DefaultCategories(),
   }
-  -- Capture cfg.display.* (minus excluded keys)
-  for k, v in pairs(barConfig.display) do
+  -- Capture visual fields (minus excluded keys)
+  for k, v in pairs(displaySrc) do
     if not EXCLUDED_DISPLAY_KEYS[k] then
       skin.display[k] = DeepCopy(v)
     end
   end
-  -- Capture top-level visual keys
-  for _, key in ipairs(TOP_LEVEL_VISUAL_KEYS) do
-    if barConfig[key] ~= nil then
-      skin.topLevel[key] = DeepCopy(barConfig[key])
+  -- Capture top-level visual keys (thresholds, colorRanges, etc.) — only for structured configs
+  if barConfig.display then
+    for _, key in ipairs(TOP_LEVEL_VISUAL_KEYS) do
+      if barConfig[key] ~= nil then
+        skin.topLevel[key] = DeepCopy(barConfig[key])
+      end
     end
   end
   return skin
@@ -426,24 +435,26 @@ end
 -- categories = nil means apply everything (backward compat).
 -- =====================================================================
 function Presets.ApplySkin(barConfig, skinData, categoryFilter)
-  if not barConfig or not barConfig.display or not skinData then return false end
+  if not barConfig or not skinData then return false end
+  -- Flat configs (e.g. castbar) have no .display sub-table; write directly onto barConfig.
+  local displayTarget = barConfig.display or barConfig
 
   -- Determine which categories to apply
   local filter = categoryFilter or skinData.categories or nil  -- nil = everything
 
-  -- Apply cfg.display.* keys
+  -- Apply display keys
   local displayData = skinData.display or skinData  -- Backward compat: old snapshots were flat
   for k, v in pairs(displayData) do
     if not EXCLUDED_DISPLAY_KEYS[k] then
       local cat = GetKeyCategory(k)
       if not filter or not cat or filter[cat] then
-        barConfig.display[k] = DeepCopy(v)
+        displayTarget[k] = DeepCopy(v)
       end
     end
   end
 
-  -- Apply top-level visual keys
-  if skinData.topLevel then
+  -- Apply top-level visual keys (thresholds, colorRanges — only structured configs use these)
+  if skinData.topLevel and barConfig.display then
     for _, key in ipairs(TOP_LEVEL_VISUAL_KEYS) do
       if skinData.topLevel[key] ~= nil then
         local cat = TOP_LEVEL_KEY_CATEGORIES[key]
@@ -454,12 +465,12 @@ function Presets.ApplySkin(barConfig, skinData, categoryFilter)
     end
   end
 
-  -- Bust caches
-  barConfig.display.stackColors = nil
-  barConfig.stackColors = nil
-
-  -- Prevent incompatible display modes from bricking the bar
-  Presets.SanitizeDisplayMode(barConfig)
+  -- Bust caches and sanitize — only for structured bar configs with a .display table
+  if barConfig.display then
+    barConfig.display.stackColors = nil
+    barConfig.stackColors = nil
+    Presets.SanitizeDisplayMode(barConfig)
+  end
 
   return true
 end
@@ -475,6 +486,7 @@ local BAR_TYPE_GROUPS = {
   cd_cooldown = "cd_cooldown",
   cd_charge   = "cd_charge",
   cd_resource = "cd_resource",
+  castbar     = "castbar",
 }
 
 function Presets.GetBarTypeGroup(barType)
@@ -811,6 +823,15 @@ function Presets.RunAutoSwitchAll()
     end
   end
 
+  -- Castbars (all instances)
+  if db.castbars then
+    for _, cb in pairs(db.castbars) do
+      if type(cb) == "table" and cb.presets then
+        if Presets.RunAutoSwitch(cb, "castbar") then changed = true end
+      end
+    end
+  end
+
   if changed then
     -- Refresh resource bars
     if ns.Resources and ns.Resources.ApplyAllBars then
@@ -830,6 +851,10 @@ function Presets.RunAutoSwitchAll()
           ns.CooldownBars.ApplyAppearance(spellID, barType)
         end
       end
+    end
+    -- Refresh castbar
+    if ns.Castbar and ns.Castbar.ApplyAppearance then
+      ns.Castbar.ApplyAppearance()
     end
     -- Notify options panel if open
     local r = LibStub and LibStub("AceConfigRegistry-3.0", true)

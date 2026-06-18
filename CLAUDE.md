@@ -4,6 +4,11 @@ ArcUI is a comprehensive World of Warcraft addon suite for WoW 12.0 (Midnight), 
 It covers cooldown management, buff/debuff tracking bars, resource bars, CDM (CooldownViewer)
 integration, custom icons/timers, and proc tracking. Related addon: ArcUI_ProcTracker (v1.0.5+).
 
+> **Shared playbook:** the global **`wow-addon-dev`** skill is the cross-addon layer for all Arc
+> addons — the CurseForge release pipeline, WoW 12.0 secret/taint rules, dev workflow, reference
+> sources, and the changelog template (`changelog-template.md`). Reference it for release/packaging
+> and general addon-dev tasks; this file is ArcUI's project-specific layer on top of it.
+
 Target client: WoW 12.0.5 (Midnight), Interface 120005 — current live build 12.0.5.67823.
 (The .toc supports 120000/120001/120005. Verify the live build against the API mirror per the
 build-check protocol in Reference Sources before doing API work.)
@@ -160,15 +165,69 @@ nothing for taint bugs.
 
 ## Changelogs & output conventions
 
+- **Assembling the content (recollection THEN diff) — do this first:** the changelog content is
+  DERIVED, never pre-canned. Two passes: (1) **Recollection** — draft from what you/the
+  `MEMORY.md` feature notes know changed this version (gives the framing + why each change helps
+  the player). (2) **Diff for the full picture** — run `git diff HEAD` (ArcUI commits ONLY on
+  release, so the working tree vs the last "Release X.Y.Z" commit IS the complete change set since
+  that release) and reconcile: add anything recollection missed, DROP pure-internal/refactor/
+  restructure changes, translate felt-but-internal changes into a player benefit (e.g. the
+  aura-engine rework → "Bar Performance"), keep only user-facing items. Recollection = framing;
+  diff = completeness. Never write a release changelog from recollection alone. Only AFTER this do
+  you format/destinations/approval below.
 - **Changelog format (CurseForge):** `## Section` header, then `- **Title** — Description` all on
   one line. NO blank lines between entries within a section; contiguous bullets under the header.
   No newline between the bold title and the description. Matches the 3.6.4 format exactly.
 - **Changelog content:** plain English, user-facing only. No technical jargon, no implementation
   details.
-- **Changelog files:** named `CHANGELOG_vX_X_X_V1.md`; increment the `_VN` suffix on every update
-  within the same version.
+- **Changelog file:** ArcUI now uses a single canonical **`CHANGELOG.md`** that the auto-packager
+  reads (`.pkgmeta` `manual-changelog`) — add each release as a `## X.Y.Z` section on top, with
+  `###` New Features / Improvements / Bug Fixes under it. (The old per-version
+  `CHANGELOG_vX_X_X_V1.md` files are legacy.) See the **Releasing** section below.
+- **Approval gate:** before any CurseForge release, show the user the finished changelog and get
+  their explicit OK before uploading. Never release a changelog unseen. (Shared rule — see the
+  `wow-addon-dev` skill's `changelog-template.md`.)
+- **In-game changelog window (ArcUI-specific) — update it EVERY release:** ArcUI ships a "What's
+  New" popup, `ns.Changelog` in `ArcUI_Changelog.lua`. The changelog has THREE destinations that
+  all carry the SAME approved notes — CurseForge, Wago, and this in-game window. So every release,
+  after the changelog is approved, add a new entry at the TOP of `CL.versions` (newest first)
+  mirroring it. Convert the CurseForge/Wago markdown into the Lua structure: section → color
+  (`New Features`→`C_NEW`, `Improvements`→`C_IMP`, `Bug Fixes`→`C_FIX`), and each
+  `- **Title** — Description` line → `{ title = "Title", desc = "Description" }` (split the bold
+  title and the description into the two fields; drop the `**` and ` — `). Same plain-English,
+  user-facing tone; same approval gate. Don't write it from scratch — translate the one approved
+  changelog into all three. See memory `changelog-module` and `changelog-template.md` §C.
 - **Deliverables:** only Lua/TOC code changes plus a brief summary. No extra documentation files,
   no change-summary documents, unless explicitly requested.
+
+---
+
+## Releasing (CurseForge auto-pipeline)
+
+ArcUI auto-releases via **GitHub Actions + the BigWigs packager** (`.github/workflows/release.yml`) —
+same pattern as ArcUI_ProcTracker; the global `wow-addon-dev` skill has the full reference. Set up
+2026-06-18, currently **uncommitted in the working tree** with the 3.7.2 restructure; it **goes live
+with the first tag (3.7.2).**
+
+**Releasing X.Y.Z:**
+1. Bump `## Version: X.Y.Z` in `ArcUI.toc`.
+2. Add a `## X.Y.Z` section (newest on top) to **`CHANGELOG.md`** — the single canonical file the
+   packager reads (`##` = version, `###` = New Features / Improvements / Bug Fixes). Assemble it
+   recollection-THEN-diff per the changelog conventions above.
+3. `luac -p` every touched Lua file.
+4. **Show the user the changelog and get explicit approval** (the gate above).
+5. Mirror the SAME approved notes into the in-game "What's New" (`ArcUI_Changelog.lua` `CL.versions`,
+   newest first). Wago is now automated — the packager uploads the file + this changelog there too.
+6. Commit, then tag with **NO "v" prefix** and push:
+   `git tag -a X.Y.Z -m "Release X.Y.Z"` → `git push origin HEAD` → `git push origin X.Y.Z`.
+   The tag triggers the Action: builds per `.pkgmeta`, uploads to CurseForge as **`ArcUI-X.Y.Z`**
+   (project `1391614`, read from the toc's `X-Curse-Project-ID`), and creates the GitHub release.
+   Do NOT `gh release create` or upload to CurseForge by hand.
+
+**Don't break:** toc `## X-Curse-Project-ID: 1391614`; repo secret `CF_API_KEY`; `.pkgmeta`
+`manual-changelog: CHANGELOG.md`; the `-n ":{package-name}-{project-version}"` label in the workflow.
+On CurseForge the project's **Automatic Packaging must be OFF** (Actions is the only packager).
+**Wago auto-upload IS wired** — repo secret `WAGO_API_TOKEN` + the toc's `## X-Wago-ID:mNw7Q2No`.
 
 ---
 
@@ -223,9 +282,16 @@ clones inside the ArcUI directory.
 Load order is defined by `ArcUI.toc` (libs → core → options → CDM module → Arc Auras → CDM
 options). Everything shares one private namespace: `local ADDON, ns = ...`.
 
+**Folder layout (3.7.2 restructure):** only `ArcUI_DB.lua`, `ArcUI_Core.lua`, `ArcUI_Minimap.lua`
+and `ArcUI_Options.lua` remain at the addon root. The rest of the non-CDM code moved into
+subfolders: `Bars\` (display/resources/catalog/cooldown bars/custom tracking + their options
+panels), `Presets\` (presets + talent picker), `Utilities\` (data repair + the not-loaded
+legacy/orphan files), `Cooldown_Reminder\`, and `Import_Export\`. The CDM side is unchanged:
+`CDM_Module\` with `CDM_Enhance\`, `CDM_Groups\`, `Arc_Auras\`. Paths below reflect this.
+
 ### How the modules connect (big picture)
 
-- **Bars side (root folder):** `ArcUI_DB` defines schema/defaults and config accessors on
+- **Bars side (root + `Bars\`):** `ArcUI_DB` defines schema/defaults and config accessors on
   `ns.API`. `ArcUI_Options` creates the AceDB (`ns.db`), registers the master options tree, and
   calls each module's `Init()` at PLAYER_LOGIN. `ArcUI_Core` hooks CDM frames for aura events and
   drives bar updates through `ns.Display` (aura/stack bars), `ns.Resources` (resource bars), and
@@ -252,81 +318,90 @@ options). Everything shares one private namespace: `local ADDON, ns = ...`.
   `ns.BarsImportExport` / `ns.CDMImportExport` / `ns.CDMMasterExport` / `ns.CRImportExport`.
   `ns.CDMSharedProfiles` syncs CDM profiles across same-class characters by reference.
 
-### Root — core (load order)
+### Root (addon root — load order)
 
 - **ArcUI_DB.lua** — DB schema (`ns.DB_DEFAULTS`), threshold presets, and `ns.API` config
   accessors: `GetBarConfig/GetResourceBarConfig/GetCooldownBarConfig`, `GetActive*Bars` (cached;
   `InvalidateActiveBarCache`), `InitializeNew*Bar`.
-- **ArcUI_BarGroupAlign.lua** — `ns.BarGroupAlign` pixel-snap/measure utilities
-  (`GetMatchedDimension`, `GetIconInset*`, `ApplySizeAndAnchor`) for bars anchored to
-  `ns.CDMGroups.groups[*].container`. Used by Display/Resources/CooldownBars.
 - **ArcUI_Core.lua** — event-driven aura engine: hooks CDM frame methods
   (`OnAuraInstanceInfoSet/Cleared`, `OnUnitAuraUpdatedEvent`, `RefreshData`, totems) to drive bar
   updates; owns `ScanAllCDMIcons()`/`GetAllCDMIcons()` (`ns.API`), alternate-cooldown-ID mapping,
-  hide-CDM-icon-when-tracked-by-bar logic, and `ns.Sounds` LSM registration.
-- **ArcUI_Display.lua** — `ns.Display`: renders all buff/debuff/stack/duration bars (textures,
-  text, ticks, curves, animations). Key: `UpdateBar`, `UpdateDurationBar`, `ApplyAppearance`,
-  `ApplyAllBars`, `RefreshAllBars`, `HideBar`, preview mode. Hooks
-  `ns.CDMGroups.UpdateGroupVisibility` for visibility sync.
-- **ArcUI_Resources.lua** — `ns.Resources`: primary/secondary resource bars (thresholds,
-  smoothing, segmented/fragmented modes, spell-cost forecasting, per-spec auto-power profiles).
-  Heavy event surface (UNIT_POWER_FREQUENT, RUNE_POWER_UPDATE, shapeshift, etc.). Key:
-  `UpdateBar`, `ApplyAppearance`, `UpdateAllBars`, `RefreshVisibility`, `PowerTypes`/
-  `SecondaryTypes` metadata.
-- **ArcUI_Catalog.lua** — `ns.Catalog`: discovers CDM auras (frame scan + DataProvider out of
-  combat), bar create/remove from catalog entries (`CreateArcUIDisplay`/`RemoveArcUIDisplay`),
-  reload-required tracking. Rescans on spec/talent change.
+  hide-CDM-icon-when-tracked-by-bar logic, and `ns.Sounds` LSM registration. **Primary target of
+  the bar aura-engine rework** (see the `cdm-aura-bars` skill).
 - **ArcUI_Minimap.lua** — LibDBIcon minimap button; opens options via `ns.API.OpenOptions()`.
-- **ArcUI_CooldownBars.lua** — `ns.CooldownBars`: player spellbook catalog (`ScanPlayerSpells`,
-  `spellCatalog` — also consumed by Cooldown Reminder and options panels) plus CRUD/runtime for
-  cooldown, charge, resource and timer bars. Slash: `/cdbar`, `/stackbar`.
-- **ArcUI_CustomTracking.lua** — `ns.CustomTracking`: deterministic custom aura/cooldown engine
-  driven by `UNIT_SPELLCAST_SUCCEEDED` (stacks, decay, modifiers, talent/spec conditions);
-  definitions edited via ArcUI_CustomOptions.
-- **ArcUI_TalentPicker.lua** — `ns.TalentPicker`: talent-tree picker UI and runtime
-  `CheckTalentConditions()` used by bars, resources, Arc Auras, and options for conditional
-  visibility.
-- **ArcUI_DataRepair.lua** — `ns.DataRepair`: SavedVariables compaction (strip defaults on
-  logout, restore on login), ghost-bar/corruption cleanup, character purge. Slash: `/arcrepair`.
-
-### Root — options & presets
-
 - **ArcUI_Options.lua** — creates the AceDB, registers the top-level AceConfig tree ("ArcUI"),
   aggregates every panel's `GetOptionsTable()`, calls module `Init()`s at login, fires panel
   open/close callbacks into CDM modules. Exports `ns.API.OpenOptions`. Slash: `/arcui`,
   `/arcbars`, `/ab`, `/aui`.
-- **ArcUI_TrackingOptions.lua** — `ns.TrackingOptions`: Aura Bars setup tab
+
+### Bars\ — bars engine & options
+
+- **Bars\ArcUI_BarGroupAlign.lua** — `ns.BarGroupAlign` pixel-snap/measure utilities
+  (`GetMatchedDimension`, `GetIconInset*`, `ApplySizeAndAnchor`) for bars anchored to
+  `ns.CDMGroups.groups[*].container`. Used by Display/Resources/CooldownBars.
+- **Bars\ArcUI_Display.lua** — `ns.Display`: renders all buff/debuff/stack/duration bars (textures,
+  text, ticks, curves, animations). Key: `UpdateBar`, `UpdateDurationBar`, `ApplyAppearance`,
+  `ApplyAllBars`, `RefreshAllBars`, `HideBar`, preview mode. Hooks
+  `ns.CDMGroups.UpdateGroupVisibility` for visibility sync.
+- **Bars\ArcUI_Resources.lua** — `ns.Resources`: primary/secondary resource bars (thresholds,
+  smoothing, segmented/fragmented modes, spell-cost forecasting, per-spec auto-power profiles).
+  Heavy event surface (UNIT_POWER_FREQUENT, RUNE_POWER_UPDATE, shapeshift, etc.). Key:
+  `UpdateBar`, `ApplyAppearance`, `UpdateAllBars`, `RefreshVisibility`, `PowerTypes`/
+  `SecondaryTypes` metadata.
+- **Bars\ArcUI_Catalog.lua** — `ns.Catalog`: discovers CDM auras (frame scan + DataProvider out of
+  combat), bar create/remove from catalog entries (`CreateArcUIDisplay`/`RemoveArcUIDisplay`),
+  reload-required tracking. Rescans on spec/talent change.
+- **Bars\ArcUI_CooldownBars.lua** — `ns.CooldownBars`: player spellbook catalog (`ScanPlayerSpells`,
+  `spellCatalog` — also consumed by Cooldown Reminder and options panels) plus CRUD/runtime for
+  cooldown, charge, resource and timer bars. Slash: `/cdbar`, `/stackbar`.
+- **Bars\ArcUI_CustomTracking.lua** — `ns.CustomTracking`: deterministic custom aura/cooldown
+  engine driven by `UNIT_SPELLCAST_SUCCEEDED` (stacks, decay, modifiers, talent/spec conditions);
+  definitions edited via Bars\ArcUI_CustomOptions.lua.
+- **Bars\ArcUI_TrackingOptions.lua** — `ns.TrackingOptions`: Aura Bars setup tab
   (`GetBuffDebuffSetupTable`) and Resources setup tab (`GetResourceSetupTable`);
   `AreTalentConditionsMet()`.
-- **ArcUI_Presets.lua** — `ns.Presets`: appearance skin/profile system (snapshot/apply/copy/
-  paste/save/load, category filtering, bar-type compatibility); library in
-  `ns.db.global.skinLibrary`.
-- **ArcUI_AppearanceOptions.lua** — `ns.AppearanceOptions`: unified appearance panel for all bar
-  types (color/fill/size/text/border/ticks); integrates `ns.Presets`; applies via
+- **Bars\ArcUI_AppearanceOptions.lua** — `ns.AppearanceOptions`: unified appearance panel for all
+  bar types (color/fill/size/text/border/ticks); integrates `ns.Presets`; applies via
   `ns.Display.ApplyAppearance` / `ns.Resources.ApplyAppearance`.
-- **ArcUI_CooldownBarOptions.lua** — `ns.CooldownBarOptions`: options tab for cooldown/charge
+- **Bars\ArcUI_CooldownBarOptions.lua** — `ns.CooldownBarOptions`: options tab for cooldown/charge
   bars (reads `ns.CooldownBars` state and presets).
-- **ArcUI_TimerBarOptions.lua** — `ns.TimerBarOptions`: "Custom Bars" tab for timer bars
+- **Bars\ArcUI_TimerBarOptions.lua** — `ns.TimerBarOptions`: "Custom Bars" tab for timer bars
   (triggers, generators/spenders, duration) — backed by `ns.CooldownBars.activeTimers`.
-- **ArcUI_CustomOptions.lua** — `ns.CustomOptions`: UI for `ns.CustomTracking` custom aura/
+- **Bars\ArcUI_CustomOptions.lua** — `ns.CustomOptions`: UI for `ns.CustomTracking` custom aura/
   cooldown definitions.
 
-### Root — Cooldown Reminder
+### Presets\ — presets & talent picker
 
-- **ArcUI_CooldownReminder.lua** — `ns.CooldownReminder` + `.Engine`: shadow-Cooldown-widget
-  detection of spell/item cooldown-ready transitions; queued/stacked pulse animations, sounds,
-  TTS, per-trigger glows. Slash: `/arcuicr`.
-- **ArcUI_CooldownReminder_Options.lua** — `ns.GetCooldownReminderOptionsTable()`: catalog
-  browser, per-spell trigger editor (type/sound/TTS/animation/glow/priority).
-- **ArcUI_CR_ImportExport.lua** — `ns.CRImportExport`: ARCUI_CR string export/import for CR
-  settings + whitelist; also bundled into ARCMASTER exports.
+- **Presets\ArcUI_TalentPicker.lua** — `ns.TalentPicker`: talent-tree picker UI and runtime
+  `CheckTalentConditions()` used by bars, resources, Arc Auras, and options for conditional
+  visibility.
+- **Presets\ArcUI_Presets.lua** — `ns.Presets`: appearance skin/profile system (snapshot/apply/
+  copy/paste/save/load, category filtering, bar-type compatibility); library in
+  `ns.db.global.skinLibrary`.
 
-### Root — import/export
+### Utilities\ — helpers
 
-- **ArcUI_Bars_ImportExport.lua** — `ns.BarsImportExport`: export/import of all bar configs
-  (aura/cooldown/resource/timer) with add/replace modes.
-- **ArcUI_UnifiedImportExport.lua** — `ns.UnifiedIE`: single import window; auto-detects string
-  type (bars/CDM/Master/CR) and routes to the right importer; character-migration tools.
+- **Utilities\ArcUI_DataRepair.lua** — `ns.DataRepair`: SavedVariables compaction (strip defaults
+  on logout, restore on login), ghost-bar/corruption cleanup, character purge. Slash: `/arcrepair`.
+  (Other files in `Utilities\` are present but NOT loaded — see that section below.)
+
+### Cooldown_Reminder\
+
+- **Cooldown_Reminder\ArcUI_CooldownReminder.lua** — `ns.CooldownReminder` + `.Engine`:
+  shadow-Cooldown-widget detection of spell/item cooldown-ready transitions; queued/stacked pulse
+  animations, sounds, TTS, per-trigger glows. Slash: `/arcuicr`.
+- **Cooldown_Reminder\ArcUI_CooldownReminder_Options.lua** — `ns.GetCooldownReminderOptionsTable()`:
+  catalog browser, per-spell trigger editor (type/sound/TTS/animation/glow/priority).
+- **Cooldown_Reminder\ArcUI_CR_ImportExport.lua** — `ns.CRImportExport`: ARCUI_CR string export/
+  import for CR settings + whitelist; also bundled into ARCMASTER exports.
+
+### Import_Export\
+
+- **Import_Export\ArcUI_Bars_ImportExport.lua** — `ns.BarsImportExport`: export/import of all bar
+  configs (aura/cooldown/resource/timer) with add/replace modes.
+- **Import_Export\ArcUI_UnifiedImportExport.lua** — `ns.UnifiedIE`: single import window;
+  auto-detects string type (bars/CDM/Master/CR) and routes to the right importer;
+  character-migration tools.
 
 ### CDM_Module — shared infrastructure
 
@@ -458,14 +533,15 @@ options). Everything shares one private namespace: `local ADDON, ns = ...`.
 
 ### Files present but NOT loaded (not in ArcUI.toc)
 
-- **ArcUI_TimerBars.lua** — old standalone timer-bar system, superseded by timer bars inside
-  ArcUI_CooldownBars.lua. NOTE: `ns.TimerBars` still EXISTS at runtime — CooldownBars.lua
-  (~line 9389) installs it as a compat shim aliasing `ns.CooldownBars` timer functions, and
-  Bars_ImportExport + AppearanceOptions call through it.
-- **ArcUI_ResourceOptions.lua** (`ns.ResourceOptions`) — orphaned resource options panel;
-  the live UI is TrackingOptions (setup) + AppearanceOptions (appearance).
-- **ArcUI_CustomTextures.lua** — LSM registration for ~140 community bar textures.
-- **ArcUI_CRDebugger.lua** — dev tool: `/crdebug` cooldown state-transition tracer for the
-  Cooldown Reminder engine.
+- **Utilities\ArcUI_TimerBars.lua** — old standalone timer-bar system, superseded by timer bars
+  inside Bars\ArcUI_CooldownBars.lua. NOTE: `ns.TimerBars` still EXISTS at runtime —
+  CooldownBars.lua (~line 9389) installs it as a compat shim aliasing `ns.CooldownBars` timer
+  functions, and Bars_ImportExport + AppearanceOptions call through it.
+- **Utilities\ArcUI_ResourceOptions.lua** (`ns.ResourceOptions`) — orphaned resource options
+  panel; the live UI is Bars\ArcUI_TrackingOptions (setup) + Bars\ArcUI_AppearanceOptions
+  (appearance).
+- **Utilities\ArcUI_CustomTextures.lua** — LSM registration for ~140 community bar textures.
+- **Cooldown_Reminder\ArcUI_CRDebugger.lua** — dev tool: `/crdebug` cooldown state-transition
+  tracer for the Cooldown Reminder engine.
 - **ArcUI_Profiler.lua** — deleted in working tree (was a profiling tool; LibPleebug fills this
   role via `ns.lpmsg`).

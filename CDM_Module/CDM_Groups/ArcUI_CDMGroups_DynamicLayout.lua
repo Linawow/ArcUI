@@ -214,6 +214,38 @@ local function ClearGroupDirty(groupName)
     _dlDirtyGroups[groupName] = nil
 end
 
+-- Notify from a cooldown VISUAL writer (CooldownState / Arc _ASV) that a frame's
+-- collapse-relevant alpha just changed. NEEDED for charge spells: the recharge
+-- swipe keeps frame.Cooldown:IsShown() true across the depleted boundary, so
+-- ns.FrameActive (which drives the dynamic-cooldowns reflow) never flips there and
+-- the layout would otherwise miss the last-charge-spent / first-charge-restored
+-- transition — leaving a gap or a slot-less returning icon. We dedupe on the
+-- rendered-alpha visible/hidden bucket (same threshold the layout uses for gap
+-- detection) so this reflows only when the icon actually crosses the collapse
+-- line, never on a plain recharge tick. Event-driven and coalesced (no polling).
+function DL.NotifyCooldownCollapseChanged(frame)
+    if not frame then return end
+    local cdID = frame.cooldownID
+    if not cdID then return end
+    local groups = ns.CDMGroups and ns.CDMGroups.groups
+    if not groups then return end
+    for _, g in pairs(groups) do
+        if g.autoReflow and g.dynamicCooldowns and g.members then
+            local member = g.members[cdID]
+            if member and member.frame == frame and not DL.IsAuraFrame(member) then
+                local a = frame:GetAlpha() or 1
+                local visibleNow = a > CONFIG.INVISIBLE_THRESHOLD
+                if frame._arcDynCollapseVisible ~= visibleNow then
+                    frame._arcDynCollapseVisible = visibleNow
+                    DL.MarkGroupDirty(g.name)
+                    ScheduleTrigger(g, "ChargeCollapseChanged", frame)
+                end
+                return
+            end
+        end
+    end
+end
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TABLE POOLING - Reuse tables to avoid garbage collection pressure
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -371,8 +403,12 @@ function TriggerDynamicLayout(group, reason, triggerFrame)
     -- During Edit Mode transitions, members can be nil (frame recycling) - skip those too.
     if triggerFrame and cdID then
         local member = group.members and group.members[cdID]
-        if not member or not DL.IsAuraFrame(member) then
-            Trace("LAYOUT_SKIP", cdID, "not a confirmed aura frame - skipping", groupName)
+        -- Aura frames (incl. totems) participate when Dynamic Auras is on; cooldown
+        -- frames participate when Dynamic Cooldowns is on. Otherwise the frame's
+        -- state never changes which icons take a slot, so skip the layout.
+        if not member then return end
+        if not DL.IsAuraFrame(member) and not group.dynamicCooldowns then
+            Trace("LAYOUT_SKIP", cdID, "not collapsible (no dynamic mode for this frame type)", groupName)
             return
         end
     end
@@ -518,19 +554,21 @@ local function HookFrameForDynamicLayout(frame, group)
         -- CRITICAL: Check BOTH autoReflow (master toggle) AND dynamicLayout (aura behavior)
         -- dynamicLayout is meaningless without autoReflow - it's a sub-feature
         if not g.autoReflow then return false end
-        if not g.dynamicLayout then return false end
-        -- Require positive confirmation: frame must be a KNOWN aura
+        if not g.dynamicLayout and not g.dynamicCooldowns then return false end
+        -- Confirm the frame's TYPE has a dynamic mode enabled: aura frames (incl.
+        -- totems) need Dynamic Auras; cooldown frames need Dynamic Cooldowns.
         if triggerFrame then
             local cdID = triggerFrame.cooldownID
             if cdID and g.members then
                 local member = g.members[cdID]
-                -- Only trigger if member exists AND is confirmed aura frame
-                -- nil member (frame recycling) or cooldown frame → skip
-                if not member or not DL.IsAuraFrame(member) then
-                    return false
+                if not member then return false end
+                if DL.IsAuraFrame(member) then
+                    if not g.dynamicLayout then return false end
+                else
+                    if not g.dynamicCooldowns then return false end
                 end
             else
-                -- No cdID or no members table → can't confirm aura, skip
+                -- No cdID or no members table → can't confirm, skip
                 return false
             end
         end
@@ -575,11 +613,11 @@ end
 function DL.SetupDynamicLayoutHooks(group)
     if not group or not group.members then return end
     
-    -- CRITICAL: Check BOTH autoReflow (master toggle) AND dynamicLayout (aura behavior)
-    -- dynamicLayout is meaningless without autoReflow - it's a sub-feature
+    -- CRITICAL: Check autoReflow (master toggle) AND at least one dynamic mode
+    -- (Dynamic Auras or Dynamic Cooldowns) — both are meaningless without autoReflow.
     if not group.autoReflow then return end
-    if not group.dynamicLayout then return end
-    
+    if not group.dynamicLayout and not group.dynamicCooldowns then return end
+
     -- Hook ALL frames in this group that have aura methods
     -- We removed IsAuraFrame check because it fails during profile load
     -- when member.viewerType isn't cached yet. HookFrameForDynamicLayout 
@@ -788,7 +826,19 @@ end
 -- Only falls back to viewerType if CDM lookup fails
 function DL.IsAuraFrame(member)
     if not member then return false end
-    
+
+    -- ArcUI totem-slot icons participate in dynamic reflow exactly like auras:
+    -- a slot is "active" while a totem occupies it and empty otherwise, so it
+    -- comes and goes like an aura even though it registers as "cooldown" type.
+    -- Treating it as aura-like here wires it into the whole dynamic-layout path
+    -- uniformly — the reflow trigger (ShouldTriggerDynamicLayout), gap detection
+    -- (FrameActive.IsActive via Cooldown:IsShown + rendered alpha), and collapse.
+    -- All of that is gated elsewhere on the group's Dynamic Auras + Auto-reflow
+    -- toggles, so a static (non-dynamic) group keeps totems in reserved cells.
+    if member.frame and member.frame._arcIsCustomTotem then
+        return true
+    end
+
     -- FIRST: Use cached viewerType on member (fast path - no API call)
     if member.viewerType then
         return member.viewerType == "aura"
@@ -1089,6 +1139,68 @@ function DL.DeduplicateGroupPositions(group)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- SMOOTH MOVE (glide) — slide icons to their new dynamic-layout slot instead of
+-- snapping (WeakAuras-style). ONE shared OnUpdate driver, alive ONLY while
+-- something is actually gliding, then it disables its own OnUpdate (zero idle
+-- cost — not constant polling). Each per-frame SetPoint is wrapped in
+-- _cdmgSettingPosition so the CDMGroups ClearAllPoints enforcement hook doesn't
+-- fight it; the frame's _cdmgTargetX/Y stays the FINAL target, so an interrupted
+-- glide just snaps to the correct spot.
+-- ═══════════════════════════════════════════════════════════════════════════
+local activeGlides = {}            -- frame -> { container, curX, curY, toX, toY, rate }
+local glideDriver                  -- shared OnUpdate frame (created lazily)
+local DEFAULT_SMOOTH_RATE = 16     -- ~0.18s to close the gap (used if no per-glide rate)
+
+local function GlideOnUpdate(self, elapsed)
+    elapsed = elapsed or 0
+    local stillGliding = false
+    for frame, g in pairs(activeGlides) do
+        if (not frame.IsShown) or (not frame:IsShown()) then
+            activeGlides[frame] = nil
+        else
+            -- Frame-rate-independent exponential ease toward the target.
+            local k = 1 - math.exp(-(g.rate or DEFAULT_SMOOTH_RATE) * elapsed)
+            if k > 1 then k = 1 elseif k < 0 then k = 0 end
+            g.curX = g.curX + (g.toX - g.curX) * k
+            g.curY = g.curY + (g.toY - g.curY) * k
+            local done = (math.abs(g.curX - g.toX) < 0.5) and (math.abs(g.curY - g.toY) < 0.5)
+            if done then g.curX, g.curY = g.toX, g.toY end
+            frame._cdmgSettingPosition = true
+            frame:ClearAllPoints()
+            frame:SetPoint("CENTER", g.container, "CENTER", g.curX, g.curY)
+            frame._cdmgSettingPosition = false
+            if done then
+                activeGlides[frame] = nil
+            else
+                stillGliding = true
+            end
+        end
+    end
+    if not stillGliding and not next(activeGlides) then
+        self:SetScript("OnUpdate", nil)   -- self-terminate — no idle OnUpdate
+    end
+end
+
+-- Glide `frame` from (fromX,fromY) to (toX,toY) as CENTER offsets of `container`.
+-- `rate` is the exponential ease rate (higher = snappier); falls back to default.
+-- Called by the group Layout in place of an instant SetPoint when a dynamic
+-- group with Smooth Movement enabled repositions an already-placed icon.
+function DL.SmoothMoveTo(frame, container, fromX, fromY, toX, toY, rate)
+    if not frame or not container then return end
+    local g = activeGlides[frame]
+    if g then
+        -- Already gliding — keep the current visual position, just retarget.
+        g.container = container
+        g.toX, g.toY = toX, toY
+        if rate then g.rate = rate end
+    else
+        activeGlides[frame] = { container = container, curX = fromX, curY = fromY, toX = toX, toY = toY, rate = rate }
+    end
+    if not glideDriver then glideDriver = CreateFrame("Frame") end
+    glideDriver:SetScript("OnUpdate", GlideOnUpdate)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- UNIFIED PIXEL POSITIONING (v2.0)
 -- Computes pixel {x,y} offsets from container CENTER for ALL alignments.
 -- Replaces the old grid-slot system (Fill Gaps) and the center-only pixel system.
@@ -1150,7 +1262,7 @@ function DL.CalculateDynamicSlots(group, rows, cols, excludeInactiveAuras)
     -- Only auras with alpha ≈ 0 are excluded from layout.
     -- ═══════════════════════════════════════════════════════════════════════
     local allActiveItems = {}
-    
+
     for cdID, member in pairs(group.members) do
         if member and member.frame and not member.isPlaceholder then
             member.cdID = cdID
@@ -1184,6 +1296,16 @@ function DL.CalculateDynamicSlots(group, rows, cols, excludeInactiveAuras)
                         if alpha > CONFIG.INVISIBLE_THRESHOLD then
                             isActive = true  -- frame still visible → keep in layout
                         end
+                    end
+                elseif (not isAura) and group.dynamicCooldowns and group.autoReflow then
+                    -- Dynamic Cooldowns: a cooldown-type frame (CDM cooldown, Arc
+                    -- spell/item, custom timer) collapses when its CURRENT state has
+                    -- hidden it (rendered alpha ≈ 0). Show-ready vs show-on-cooldown
+                    -- is chosen via the per-frame Active/Not-Active alpha; the
+                    -- cooldown state drives that alpha through _ASV / CDMEnhance.
+                    local alpha = member.frame:GetAlpha() or 0
+                    if alpha <= CONFIG.INVISIBLE_THRESHOLD then
+                        isActive = false  -- hidden cooldown frame → real gap
                     end
                 end
 
@@ -1230,7 +1352,55 @@ function DL.CalculateDynamicSlots(group, rows, cols, excludeInactiveAuras)
         return 9999
     end
     
+    -- First-come-first-served ordering (when enabled): keep a per-group list of
+    -- active cdIDs in the order they became active. Survivors keep their relative
+    -- order, icons that went inactive drop out, and icons that became active this
+    -- pass are appended in configured order (so several coming up together keep a
+    -- sensible left-to-right order). The rank in this list drives the sort below,
+    -- so an already-active icon is never shoved aside by a higher-priority icon —
+    -- it only shifts when something ahead of it leaves. Runtime-only state.
+    local fcfsRank
+    if group.dynamicOrderMode == "fcfs" then
+        local prevOrder = group._fcfsOrder or {}
+        local active = {}
+        for _, item in ipairs(allActiveItems) do active[item.cdID] = true end
+        local newOrder, seen = {}, {}
+        for _, cdID in ipairs(prevOrder) do
+            if active[cdID] and not seen[cdID] then
+                newOrder[#newOrder + 1] = cdID
+                seen[cdID] = true
+            end
+        end
+        local newcomers = {}
+        for _, item in ipairs(allActiveItems) do
+            if not seen[item.cdID] then newcomers[#newcomers + 1] = item.cdID end
+        end
+        table.sort(newcomers, function(a, b)
+            local ao, bo = getSavedOrder(a), getSavedOrder(b)
+            if ao ~= bo then return ao < bo end
+            local at, bt = type(a), type(b)
+            if at ~= bt then return at == "number" end
+            return a < b
+        end)
+        for _, cdID in ipairs(newcomers) do
+            newOrder[#newOrder + 1] = cdID
+            seen[cdID] = true
+        end
+        group._fcfsOrder = newOrder
+        fcfsRank = {}
+        for i, cdID in ipairs(newOrder) do fcfsRank[cdID] = i end
+    end
+
     table.sort(allActiveItems, function(a, b)
+        -- First-come-first-served: order by activation rank so the icon that
+        -- became active first stays leftmost; new activations append after it.
+        if fcfsRank then
+            local ar = fcfsRank[a.cdID] or 999999
+            local br = fcfsRank[b.cdID] or 999999
+            if ar ~= br then
+                return ar < br
+            end
+        end
         local aOrder = getSavedOrder(a.cdID)
         local bOrder = getSavedOrder(b.cdID)
         if aOrder ~= bOrder then
@@ -2249,6 +2419,7 @@ function DL.CollectMembersForReflow(group)
     
     local maxCols = group.layout and group.layout.gridCols or 4
     local dynEnabled = group.dynamicLayout and group.autoReflow
+    local cdDynEnabled = group.dynamicCooldowns and group.autoReflow
     
     for cdID, member in pairs(group.members) do
         -- Store cdID on member for type detection
@@ -2304,6 +2475,10 @@ function DL.CollectMembersForReflow(group)
             -- When Dynamic Auras is OFF, auras are always "active" (same as cooldowns)
             elseif dynEnabled and isAura then
                 isActive = DL.IsAuraActive(member)
+            -- Dynamic Cooldowns: a hidden (alpha ≈ 0) cooldown-type frame is a gap.
+            elseif cdDynEnabled and not isAura then
+                local a = member.frame:GetAlpha() or 0
+                if a <= CONFIG.INVISIBLE_THRESHOLD then isActive = false end
             end
             
             -- Always compute sortIndex from SAVED position (authoritative user order)
@@ -2347,7 +2522,8 @@ function DL.CollectMembersForReflow(group)
             -- When dynamic is ON: inactive auras, bar-hidden, and truly hidden frames are gaps
             -- When dynamic is OFF: everything reflows (except bar-hidden and truly hidden)
             local isBarHidden = member.frame and member.frame._arcHiddenByBar
-            if isTrulyHidden or isBarHidden or (dynEnabled and isAura and not isActive) then
+            if isTrulyHidden or isBarHidden or (dynEnabled and isAura and not isActive)
+               or (cdDynEnabled and not isAura and not isActive) then
                 -- Inactive/hidden = skip (treat as gap)
                 table.insert(result.toSkip, iconData)
             else
