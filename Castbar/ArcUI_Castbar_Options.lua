@@ -34,9 +34,16 @@ local collapsedSections = {
 }
 
 local function GetCastbarDB()
-  local db = ns.API and ns.API.GetDB and ns.API.GetDB()
+  -- Resolve via the shared-aware store so shared-castbar mode (account-wide) is honored.
+  local db = ns.API and ns.API.GetCastbarStore and ns.API.GetCastbarStore()
   -- Phase 1: edit instance 1. Phase 2 will route this through the selected-instance id.
   return db and db.castbars and db.castbars[ns.CastbarOptions._selectedID or 1]
+end
+
+-- Bar POSITION config: routes through the runtime's location resolver so the X/Y sliders edit the
+-- same store the bar uses (per-character in shared mode unless location sharing is on).
+local function PosCfg()
+  return (ns.Castbar and ns.Castbar.GetPositionCfg and ns.Castbar.GetPositionCfg()) or GetCastbarDB()
 end
 
 local _notifyToken = 0
@@ -177,9 +184,68 @@ function ns.CastbarOptions.GetOptionsTable()
         name  = "|cffffd100Enable Castbar|r",
         desc  = "Show the castbar while casting or channeling spells.",
         order = 0.55,
-        width = "full",
+        width = 1.2,
         get   = function() local c = GetCastbarDB(); return c and c.enabled end,
         set   = function(_, v) local c = GetCastbarDB(); if c then c.enabled = v; Refresh() end end,
+      },
+
+      hideCastBar = {
+        type  = "toggle",
+        name  = "Hide Blizzard Castbar",
+        desc  = "Hide the default Blizzard castbar (PlayerCastingBarFrame).",
+        order = 0.56,
+        width = 1.3,
+        get   = function() local c = GetCastbarDB(); return c and c.hideCastBar end,
+        set   = function(_, v)
+          local c = GetCastbarDB()
+          if c then
+            c.hideCastBar = v
+            if ns.Castbar and ns.Castbar.ApplyAppearance then
+              ns.Castbar.ApplyAppearance()
+            end
+          end
+        end,
+      },
+
+      shareCastbar = {
+        type    = "toggle",
+        name    = "Share Castbar Across Characters",
+        desc    = "Use ONE castbar for every character on your account. When you turn this on, THIS character's current castbar appearance becomes the shared one. Your other characters' own castbars are kept and restored if you turn this off.\n\n|cffff9900Account-wide. Your aura bars are not affected.|r",
+        order   = 0.57,
+        width   = 2.0,
+        confirm = function(_, v)
+          if v and not (ns.db and ns.db.global and ns.db.global.castbarSharedInit) then
+            return "Make THIS character's current castbar the shared one for all your characters?\n\nYour other characters' castbars are kept and restored if you turn this back off."
+          end
+          return false
+        end,
+        get     = function() return ns.db and ns.db.global and ns.db.global.castbarShared end,
+        set     = function(_, v)
+          local g = ns.db and ns.db.global
+          if not g then return end
+          if v and not g.castbarSharedInit then
+            if ns.Castbar and ns.Castbar.PromoteToShared then ns.Castbar.PromoteToShared() end
+            g.castbarSharedInit = true
+          end
+          g.castbarShared = v
+          Refresh()
+        end,
+      },
+
+      shareCastbarLocation = {
+        type   = "toggle",
+        name   = "Also Share Castbar Position",
+        desc   = "When the castbar is shared, also use the SAME on-screen position on every character.\n\nOff (default): each character places the shared castbar wherever they like; only the look is shared.",
+        order  = 0.575,
+        width  = 2.0,
+        hidden = function() return not (ns.db and ns.db.global and ns.db.global.castbarShared) end,
+        get    = function() return ns.db and ns.db.global and ns.db.global.castbarShareLocation end,
+        set    = function(_, v)
+          local g = ns.db and ns.db.global
+          if not g then return end
+          g.castbarShareLocation = v
+          Refresh()
+        end,
       },
 
       profileSelector = {
@@ -979,9 +1045,9 @@ function ns.CastbarOptions.GetOptionsTable()
         order   = 130.3,
         min     = -2000, max = 2000, step = 1, bigStep = 10,
         hidden  = H("position"),
-        get     = function() local c = GetCastbarDB(); return (c and c.barPosition and c.barPosition.x) or 0 end,
+        get     = function() local c = PosCfg(); return (c and c.barPosition and c.barPosition.x) or 0 end,
         set = function(_, v)
-          local c = GetCastbarDB()
+          local c = PosCfg()
           if c then
             c.barPosition = c.barPosition or {point="CENTER",relPoint="CENTER",x=0,y=0}
             c.barPosition.x = v
@@ -997,9 +1063,9 @@ function ns.CastbarOptions.GetOptionsTable()
         order   = 130.4,
         min     = -1000, max = 1000, step = 1, bigStep = 10,
         hidden  = H("position"),
-        get     = function() local c = GetCastbarDB(); return (c and c.barPosition and c.barPosition.y) or 0 end,
+        get     = function() local c = PosCfg(); return (c and c.barPosition and c.barPosition.y) or 0 end,
         set = function(_, v)
-          local c = GetCastbarDB()
+          local c = PosCfg()
           if c then
             c.barPosition = c.barPosition or {point="CENTER",relPoint="CENTER",x=0,y=0}
             c.barPosition.y = v

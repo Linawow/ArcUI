@@ -5331,6 +5331,7 @@ SavePositionToSpec = function(cdID, positionData, forceSave)
     -- ═══════════════════════════════════════════════════════════════════════════
     local profileSavedPositions = GetProfileSavedPositions()
     if profileSavedPositions then
+        if _G.ArcUI_SaveDebug then _G.ArcUI_SaveDebug("SavePositionToSpec", cdID, positionData and positionData.target, positionData and positionData.row, positionData and positionData.col, forceSave) end  -- [TEMP DEBUG]
         profileSavedPositions[cdID] = positionData
     end
 end
@@ -5403,6 +5404,7 @@ local function SaveGroupPosition(cdID, groupName, row, col, forceSave, sortIndex
     }
     
     -- Write to the verified profile table
+    if _G.ArcUI_SaveDebug then _G.ArcUI_SaveDebug("SaveGroupPosition", cdID, groupName, row, col, forceSave) end  -- [TEMP DEBUG]
     profileSavedPositions[cdID] = positionData
 end
 ns.CDMGroups.SaveGroupPosition = SaveGroupPosition
@@ -8968,13 +8970,25 @@ function ns.CDMGroups.CreateGroup(name)
     function group:RestoreToSavedPositions()
         local maxRows = self.layout.gridRows
         local maxCols = self.layout.gridCols
-        
+
         -- Clear grid
         self.grid = {}
         for row = 0, maxRows - 1 do
             self.grid[row] = {}
         end
-        
+
+        -- Read-only free-cell finder over the grid being rebuilt. (Deliberately NOT
+        -- group:FindNextFreeSlot, which mutates self.members and would corrupt this pairs() loop.)
+        local function nextFreeCell()
+            for r = 0, maxRows - 1 do
+                local gr = self.grid[r]
+                for c = 0, maxCols - 1 do
+                    if not (gr and gr[c]) then return r, c end
+                end
+            end
+            return nil, nil
+        end
+
         -- Restore each member to their saved position
         for cdID, member in pairs(self.members) do
             -- Skip placeholders - they don't occupy grid during reflow
@@ -8983,24 +8997,31 @@ function ns.CDMGroups.CreateGroup(name)
                 if saved and saved.type == "group" and saved.target == self.name then
                     local row = saved.row or 0
                     local col = saved.col or 0
-                    
+
                     -- Clamp to grid bounds
                     row = math.min(row, maxRows - 1)
                     col = math.min(col, maxCols - 1)
-                    
+
+                    -- COLLISION-SAFE: if this saved slot is already claimed (legacy duplicate
+                    -- saved positions), move this icon to the next free cell instead of stacking
+                    -- it on top of the other - prevents the visible icon-over-icon overlap.
+                    if self.grid[row][col] and self.grid[row][col] ~= cdID then
+                        local fr, fc = nextFreeCell()
+                        if fr then row, col = fr, fc end
+                    end
+
                     -- Update member position from saved
                     member.row = row
                     member.col = col
-                    
+
                     -- Place in grid (if position not already taken)
-                    -- If multiple icons saved at same position, first one wins
                     if not self.grid[row][col] then
                         self.grid[row][col] = cdID
                     end
                 end
             end
         end
-        
+
         self:MarkGridDirty()
     end
     

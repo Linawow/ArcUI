@@ -75,6 +75,13 @@ Secret values are tainted runtime values addons cannot inspect.
 - Player spellcasts (including pets), even in combat — `UNIT_SPELLCAST_SUCCEEDED` on "player" is safe.
 - `UnitHealthMax`/`UnitPowerMax` for player units; `UnitStagger` for player. `UnitPowerMax` returns
   non-secret 0 if the unit doesn't use that power type.
+- `UnitPower` (CURRENT power, incl. secondary resources like combo points/holy power/chi/essence/
+  arcane charges/soul shards) for the player is annotated `SecretWhenUnitPowerRestricted` — it is
+  NON-secret in normal play and only secret under a restricted context. Do NOT assume current power
+  is secret. The secret-safe color path is `UnitPowerPercent(unit, powerType, false, curve)`; for
+  direct numeric comparison, guard with `issecretvalue` to cover the restricted edge. Rule: confirm
+  any secret claim via the `Secret*` annotations in `Blizzard_APIDocumentationGenerated`, never by
+  inferring from a local variable name or an incomplete rule list.
 - `UnitIsUnit` for target/focus/mouseover/softenemy/softinteract/softfriend tokens (compound tokens
   like boss1target remain secret).
 - `maxCharges` (non-secret as of 12.0.1); `isEnabled` and `isActive` from spell/action cooldown APIs.

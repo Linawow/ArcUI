@@ -665,6 +665,17 @@ local function GetOptionsTable()
             return tbl
           end)(),
 
+          castbarExport = (function()
+            local tbl = ns.GetCastbarExportOnlyOptionsTable and ns.GetCastbarExportOnlyOptionsTable() or {
+              type = "group",
+              name = "Castbar Export",
+              args = { loading = { type = "description", name = "Loading...", order = 1 } }
+            }
+            tbl.name = "Castbar Export"
+            tbl.order = 3.7
+            return tbl
+          end)(),
+
           unifiedImport = (function()
             local tbl = ns.GetUnifiedImportExportOptionsTable and ns.GetUnifiedImportExportOptionsTable() or {
               type = "group",

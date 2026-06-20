@@ -23,6 +23,8 @@ local state = {
 
     -- Bars-specific
     barsImportMode = "add",
+    barsCastbarMode     = "replace",  -- "replace" | "skin" (when a bars import carries a castbar)
+    barsCastbarSkinName = "",
 
     -- CDM-specific (what to import)
     cdmImportGroupLayouts   = true,
@@ -82,6 +84,12 @@ local function TryDetect(str)
         if data then return "cr", data, nil end
     end
 
+    -- Castbar (AceSerializer + ARCUI_CASTBAR prefix)
+    if ns.CastbarImportExport and ns.CastbarImportExport.ParseImportString then
+        local data, err = ns.CastbarImportExport.ParseImportString(str)
+        if data then return "castbar", data, nil end
+    end
+
     return nil, nil, "Could not detect import type — invalid or corrupted string"
 end
 
@@ -91,6 +99,8 @@ local function OnStringParsed(t, d)
 
     -- Reset type-specific state
     state.barsImportMode = "add"
+    state.barsCastbarMode = "replace"
+    state.barsCastbarSkinName = ""
     state.masterImportMode = "merge"
     state.crImportMode = "merge"
     state.crImportGlobals = true
@@ -121,10 +131,11 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local TYPE_LABELS = {
-    bars   = "|cffFFD100Bars Export|r",
-    cdm    = "|cff00CCFFIcon Manager Export|r",
-    master = "|cff00FF88Master Export|r",
-    cr     = "|cffFF7777Cooldown Reminder Export|r",
+    bars    = "|cffFFD100Bars Export|r",
+    cdm     = "|cff00CCFFIcon Manager Export|r",
+    master  = "|cff00FF88Master Export|r",
+    cr      = "|cffFF7777Cooldown Reminder Export|r",
+    castbar = "|cff66CCFFCastbar Export|r",
 }
 
 local function BuildPreview(t, d)
@@ -207,10 +218,18 @@ local function BuildPreview(t, d)
             "%d bar(s) — |cffFFFF00%d aura|r  |cff00FFFF%d cooldown|r  |cff00FF88%d resource|r  |cffCC66FF%d timer|r",
             total, auraCount, cooldownCount, resourceCount, timerCount
         ))
+        if type(d.castbar) == "table" then
+            table.insert(lines, "|cffCC66FFCastbar:|r 1 (full castbar config)")
+        end
 
     elseif t == "cr" then
         if ns.CRImportExport and ns.CRImportExport.GenerateImportPreview then
             table.insert(lines, ns.CRImportExport.GenerateImportPreview(d))
+        end
+
+    elseif t == "castbar" then
+        if ns.CastbarImportExport and ns.CastbarImportExport.GenerateImportPreview then
+            table.insert(lines, ns.CastbarImportExport.GenerateImportPreview(d))
         end
     end
 
@@ -259,7 +278,10 @@ local function DoImport()
         end
 
     elseif state.detectedType == "bars" then
-        local success, result = ns.BarsImportExport.ImportBars(state.detectedData, state.barsImportMode)
+        local success, result = ns.BarsImportExport.ImportBars(state.detectedData, state.barsImportMode, {
+            castbarMode     = state.barsCastbarMode,
+            castbarSkinName = state.barsCastbarSkinName,
+        })
         if success then
             print(MSG_PREFIX .. "|cff00ff00" .. result .. "|r")
         else
@@ -277,6 +299,14 @@ local function DoImport()
         else
             print(MSG_PREFIX .. "|cffff0000Import failed:|r " .. (result or "Unknown"))
         end
+
+    elseif state.detectedType == "castbar" then
+        local success, result = ns.CastbarImportExport.Import(state.detectedData)
+        if success then
+            print(MSG_PREFIX .. "|cff00ff00Castbar import: " .. (result or "ok") .. "|r")
+        else
+            print(MSG_PREFIX .. "|cffff0000Import failed:|r " .. (result or "Unknown"))
+        end
     end
 
     -- Clear after import
@@ -284,6 +314,8 @@ local function DoImport()
     state.detectedType = nil
     state.detectedData = nil
     state.importError  = nil
+    state.barsCastbarMode     = "replace"
+    state.barsCastbarSkinName = ""
     wipe(state.masterActiveOverrides)
     wipe(state.masterSelectedProfiles)
     wipe(masterActiveSelectorArgs)
@@ -422,6 +454,42 @@ function UIE.GetOptionsTable()
                 end,
                 order  = 12,
                 hidden = function() return state.detectedType ~= "bars" end,
+            },
+            -- Castbar import choice (shown only when the bars import carries a castbar)
+            barsCastbarMode = {
+                type   = "select",
+                name   = "Castbar",
+                order  = 12.5,
+                width  = 1.5,
+                hidden = function()
+                    return not (state.detectedType == "bars" and state.detectedData
+                        and type(state.detectedData.castbar) == "table")
+                end,
+                values = {
+                    replace = "Replace my castbar",
+                    skin    = "Save as a skin",
+                },
+                get = function() return state.barsCastbarMode end,
+                set = function(_, val)
+                    state.barsCastbarMode = val
+                    if val == "skin" and (state.barsCastbarSkinName == nil or state.barsCastbarSkinName == "") then
+                        local d = state.detectedData
+                        state.barsCastbarSkinName = (d and d.exportedBy and (d.exportedBy .. "'s Castbar")) or "Imported Castbar"
+                    end
+                end,
+            },
+            barsCastbarSkinName = {
+                type   = "input",
+                name   = "Castbar Skin Name",
+                order  = 12.6,
+                width  = 1.5,
+                hidden = function()
+                    return not (state.detectedType == "bars" and state.detectedData
+                        and type(state.detectedData.castbar) == "table"
+                        and state.barsCastbarMode == "skin")
+                end,
+                get = function() return state.barsCastbarSkinName end,
+                set = function(_, val) state.barsCastbarSkinName = val end,
             },
 
             -- ════════════════════════════════════════════════════════════

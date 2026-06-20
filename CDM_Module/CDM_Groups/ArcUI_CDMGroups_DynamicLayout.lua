@@ -1081,7 +1081,8 @@ function DL.DeduplicateGroupPositions(group)
                 -- Preserve existing viewerType from the saved entry
                 local existing = savedPositions[dup.cdID]
                 local viewerType = existing and existing.viewerType
-                
+
+                if _G.ArcUI_SaveDebug then _G.ArcUI_SaveDebug("DL.Dedup", dup.cdID, groupName, newRow, newCol, false) end  -- [TEMP DEBUG]
                 -- Update saved position
                 savedPositions[dup.cdID] = {
                     type = "group",
@@ -2191,6 +2192,10 @@ function DL.OnOptionsPanelOpened()
             group._activeOrder = nil
             group._appliedOffsetX = nil
             group._appliedOffsetY = nil
+            -- Reset first-come-first-served activation order. Without this the in-combat
+            -- order survives the panel cycle, so closing the panel rebuilds the dynamic
+            -- layout from the last combat arrangement instead of from saved positions.
+            group._fcfsOrder = nil
             
             -- Restore member.row/col to saved positions for grid editing
             if group.members then
@@ -2199,14 +2204,54 @@ function DL.OnOptionsPanelOpened()
                 -- Rebuild grid clean from saved positions so GetDropTarget sees correct occupancy
                 group.grid = {}
                 for r = 0, maxRows - 1 do group.grid[r] = {} end
+                -- Read-only free-cell finder over the grid being rebuilt
+                local function nextFreeCell()
+                    for r = 0, maxRows - 1 do
+                        local gr = group.grid[r]
+                        for c = 0, maxCols - 1 do
+                            if not (gr and gr[c]) then return r, c end
+                        end
+                    end
+                    return nil, nil
+                end
+                -- PASS 1: place REAL (framed, non-placeholder) icons first, collision-safe so two
+                -- active icons never stack. Reals go first so a placeholder can NEVER bump a real
+                -- icon: mutually-exclusive talent slot partners exist as a real+placeholder pair that
+                -- intentionally SHARE a cell, and only the real one should own the slot.
                 for cdID, member in pairs(group.members) do
-                    local saved = savedPositions[cdID]
-                    if saved and saved.type == "group" and saved.target == groupName then
-                        if saved.row ~= nil and saved.col ~= nil then
+                    if not member.isPlaceholder and member.frame then
+                        local saved = savedPositions[cdID]
+                        if saved and saved.type == "group" and saved.target == groupName
+                           and saved.row ~= nil and saved.col ~= nil then
+                            -- Clamp into the current grid (a removed row/col must not place an icon outside)
+                            local row = math.min(saved.row, maxRows - 1)
+                            local col = math.min(saved.col, maxCols - 1)
+                            -- COLLISION-SAFE: never stack two real icons on one saved slot (legacy
+                            -- duplicate data) - move the loser to the next free cell instead.
+                            if group.grid[row] and group.grid[row][col] and group.grid[row][col] ~= cdID then
+                                local fr, fc = nextFreeCell()
+                                if fr then row, col = fr, fc end
+                            end
+                            member.row = row
+                            member.col = col
+                            if group.grid[row] and not group.grid[row][col] then
+                                group.grid[row][col] = cdID
+                            end
+                        end
+                    end
+                end
+                -- PASS 2: placeholders / frameless members take their saved slot WITHOUT bumping
+                -- (a placeholder may legitimately share a real icon's cell - slot partners). Claim
+                -- the grid only if still free so the real icon keeps ownership for drop detection.
+                for cdID, member in pairs(group.members) do
+                    if member.isPlaceholder or not member.frame then
+                        local saved = savedPositions[cdID]
+                        if saved and saved.type == "group" and saved.target == groupName
+                           and saved.row ~= nil and saved.col ~= nil then
                             member.row = saved.row
                             member.col = saved.col
-                            -- Write into grid so drop indicator reads correct occupancy
-                            if group.grid[saved.row] then
+                            -- Write into grid so drop indicator reads correct occupancy (if free)
+                            if group.grid[saved.row] and not group.grid[saved.row][saved.col] then
                                 group.grid[saved.row][saved.col] = cdID
                             end
                         end
@@ -2251,6 +2296,10 @@ function DL.OnOptionsPanelClosed()
         for groupName, group in pairs(ns.CDMGroups.groups) do
             group._appliedOffsetX = nil
             group._appliedOffsetY = nil
+            -- Reset first-come-first-served activation order BEFORE the reflow below, so the
+            -- dynamic layout rebuilds from SAVED positions on close, not the last in-combat
+            -- arrangement. No-op for saved-order groups (they never use _fcfsOrder).
+            group._fcfsOrder = nil
         end
     end
     
@@ -2390,6 +2439,7 @@ local function SavePosition(cdID, groupName, row, col, sortIndex)
         -- If it's nil, something is wrong - don't create a disconnected table
         return
     end
+    if _G.ArcUI_SaveDebug then _G.ArcUI_SaveDebug("DL.SavePosition", cdID, groupName, row, col, false) end  -- [TEMP DEBUG]
     ns.CDMGroups.savedPositions[cdID] = {
         type = "group",
         target = groupName,

@@ -12,6 +12,26 @@ ns.CDMEnhance = ns.CDMEnhance or {}
 -- Use shared CDM constants and helpers (from ArcUI_CDM_Shared.lua)
 local Shared = ns.CDMShared
 
+-- ArcUI 12.1-forward fix: EquipSlotTracked (trinket buff) and other aura-type CDM
+-- frames in 12.1 have a nil cooldownInfo.spellID, so the proc-glow spellID is derived
+-- from the (secret) aura. C_SpellActivationOverlay.IsSpellOverlayed rejects a secret
+-- argument in 12.1, so route every overlay check through this guard. On 12.0.7 these
+-- spellIDs are never secret, so behavior there is identical.
+local function SafeIsSpellOverlayed(spellID)
+  if not spellID then return false end
+  if issecretvalue and issecretvalue(spellID) then return false end
+  return C_SpellActivationOverlay and C_SpellActivationOverlay.IsSpellOverlayed(spellID)
+end
+
+-- ArcUI 12.1-forward fix: a frame-DERIVED spellID (frame:GetSpellID() / _arcSpellID) is
+-- SECRET on equip-slot aura frames (trinket buffs); comparing or passing a secret number
+-- throws in 12.1. Neutralize it at the source so every downstream compare/API is a safe
+-- non-match. On 12.0.7 these are never secret, so behavior is identical.
+local function NonSecretSpellID(spellID)
+  if spellID and issecretvalue and issecretvalue(spellID) then return nil end
+  return spellID
+end
+
 -- Profiler handler tracking (nil-safe if profiler not loaded)
 local Track = _G.ArcUIProfiler_Track
 local function _T(name, fn) return Track and Track(name, fn) or fn end
@@ -3253,6 +3273,7 @@ ApplyIconStyle = function(frame, cdID)
       
       -- Clean up previous mode state if mode changed
       if frame._arcSwipeMode ~= modeSignature then
+        local prevMode = frame._arcSwipeMode
         frame._arcSwipeMode = modeSignature
         
         -- Restore original cooldown frame state
@@ -3271,12 +3292,33 @@ ApplyIconStyle = function(frame, cdID)
             if not frame._arcSwipeWaitForNoCharges then frame._arcChargeText:SetIgnoreParentAlpha(false) end
           end
           
-          -- Trigger CDM to refresh this icon so it shows the proper aura duration
-          C_Timer.After(0.05, function()
-            if frame.viewerFrame and frame.viewerFrame.RefreshData then
-              frame.viewerFrame:RefreshData()
+          -- Restore CDM's aura-duration display after EXITING Ignore-Aura-Override.
+          -- Only when we were actually overriding (prev mode was IAO) — a frame that was
+          -- never in IAO has nothing to undo, so this no longer fires for every normal
+          -- icon. NEVER call viewerFrame:RefreshData() from this tainted addon path: on
+          -- 12.0.7 that runs CDM's RefreshTotemData/RefreshAuraInstance/CacheCooldownValues
+          -- tainted and their unguarded secret comparisons throw, bricking the whole UI
+          -- mid-instance (the "tainted by ArcUI" cascade).
+          if prevMode and prevMode:find("ignoreAura", 1, true) and frame.Cooldown then
+            -- IAOFight had set SetUseAuraDisplayTime(false); restore aura display mode.
+            if frame.Cooldown.SetUseAuraDisplayTime then
+              frame.Cooldown:SetUseAuraDisplayTime(true)
             end
-          end)
+            -- Best-effort immediate re-push of the aura's real remaining duration via the
+            -- approved secret-safe sink, so the swipe is correct at once instead of waiting
+            -- for CDM's next aura event. Fully guarded: if the API is unavailable, CDM's
+            -- next refresh restores it. _arcBypassCDHook mirrors the IAO entry push above.
+            if (frame.wasSetFromAura == true) and frame.auraInstanceID
+               and C_UnitAuras and C_UnitAuras.GetAuraDuration
+               and frame.Cooldown.SetCooldownFromDurationObject then
+              local durObj = C_UnitAuras.GetAuraDuration(frame.auraDataUnit or "player", frame.auraInstanceID)
+              if durObj then
+                frame._arcBypassCDHook = true
+                frame.Cooldown:SetCooldownFromDurationObject(durObj)
+                frame._arcBypassCDHook = false
+              end
+            end
+          end
         end
       end
       
@@ -3629,6 +3671,22 @@ ApplyIconStyle = function(frame, cdID)
           return
         end
 
+        -- 12.1 ITEM (trinket) frames: CDM's desat flickers with the GCD — it SATURATES the
+        -- icon during a GCD even while the real item cooldown is running (and desaturates a
+        -- ready trinket on a GCD). Derive desat from the REAL item cooldown
+        -- (GetInventoryItemCooldown, inherently GCD-free): on item CD => desaturated, ready
+        -- => saturated. Steady through GCDs. >1.5 filters GCD-length noise (see GCDFilter).
+        local eqSlot = pf.cooldownInfo and pf.cooldownInfo.equipSlot
+        if eqSlot then
+          local _, idur = GetInventoryItemCooldown("player", eqSlot)
+          local onItemCD = (idur and idur > 1.5) and true or false
+          pf._arcLastDesatHookAction = "ITEM→" .. (onItemCD and "1" or "0")
+          pf._arcBypassDesatHook = true
+          if self.SetDesaturation then self:SetDesaturation(onItemCD and 1 or 0) else self:SetDesaturated(onItemCD) end
+          pf._arcBypassDesatHook = false
+          return
+        end
+
         -- FAST PATH: Skip all work when no dynamic overrides are active AND
         -- cfg says no intercept is needed. Avoids GetEffectiveIconSettingsForFrame
         -- and GetEffectiveStateVisuals (which allocates a table) on PASSTHROUGH calls.
@@ -3729,6 +3787,19 @@ ApplyIconStyle = function(frame, cdID)
             pf._arcLastDesatHookAction = "DUROV→" .. tostring(v)
             pf._arcBypassDesatHook = true
             self:SetDesaturation(v)
+            pf._arcBypassDesatHook = false
+            return
+          end
+
+          -- 12.1 ITEM (trinket) frames: enforce desat from the REAL item cooldown, ignoring
+          -- CDM's GCD-driven flicker (see the SetDesaturated hook above for the full why).
+          local eqSlot = pf.cooldownInfo and pf.cooldownInfo.equipSlot
+          if eqSlot then
+            local _, idur = GetInventoryItemCooldown("player", eqSlot)
+            local onItemCD = (idur and idur > 1.5) and true or false
+            pf._arcLastDesatHookAction = "ITEM→" .. (onItemCD and "1" or "0")
+            pf._arcBypassDesatHook = true
+            self:SetDesaturation(onItemCD and 1 or 0)
             pf._arcBypassDesatHook = false
             return
           end
@@ -4164,7 +4235,7 @@ ApplyIconStyle = function(frame, cdID)
       spellID = frame.cooldownInfo.overrideSpellID or frame.cooldownInfo.spellID
     end
     if not spellID and frame.GetSpellID then
-      spellID = frame:GetSpellID()
+      spellID = NonSecretSpellID(frame:GetSpellID())
     end
     frame._arcSpellID = spellID
     
@@ -4182,7 +4253,7 @@ ApplyIconStyle = function(frame, cdID)
     -- ═══════════════════════════════════════════════════════════════
     if spellID and glowCfg.enabled ~= false then
       local isOverlayed = false
-        isOverlayed = C_SpellActivationOverlay and C_SpellActivationOverlay.IsSpellOverlayed(spellID)
+        isOverlayed = C_SpellActivationOverlay and SafeIsSpellOverlayed(spellID)
       
       if isOverlayed then
         -- Proc is active - apply our color to CDM's glow
@@ -4396,7 +4467,7 @@ ApplyIconStyle = function(frame, cdID)
     if gCfg and spellID and gCfg.enabled ~= false then
       -- Check current proc state
       local isOverlayed = false
-        isOverlayed = C_SpellActivationOverlay and C_SpellActivationOverlay.IsSpellOverlayed(spellID)
+        isOverlayed = C_SpellActivationOverlay and SafeIsSpellOverlayed(spellID)
       
       if isOverlayed then
         ns.CDMEnhance.ShowProcGlow(frame, gCfg)
@@ -9666,7 +9737,7 @@ function ns.CDMEnhance.HideProcGlow(frame)
       local glowCfg = cfg and cfg.procGlow
       if not glowCfg or glowCfg.enabled == false then return end
       -- Check saved spellID first (pure race — briefly de-registered)
-      if savedSpellID and C_SpellActivationOverlay.IsSpellOverlayed(savedSpellID) then
+      if savedSpellID and SafeIsSpellOverlayed(savedSpellID) then
         HideCDMProcGlow(frame)
         ns.CDMEnhance.ShowProcGlow(frame, glowCfg)
         if ns.devMode then
@@ -9677,7 +9748,7 @@ function ns.CDMEnhance.HideProcGlow(frame)
       -- Check base spellID (FFE-style removal — overlay switched to base spell but
       -- CDM didn't fire ShowAlert for it)
       if baseSpellID and baseSpellID ~= savedSpellID
-         and C_SpellActivationOverlay.IsSpellOverlayed(baseSpellID) then
+         and SafeIsSpellOverlayed(baseSpellID) then
         HideCDMProcGlow(frame)
         ns.CDMEnhance.ShowProcGlow(frame, glowCfg)
         if ns.devMode then
@@ -9708,7 +9779,7 @@ function ns.CDMEnhance.CleanupStaleProcGlows()
         currentSpellID = frame.cooldownInfo.overrideSpellID or frame.cooldownInfo.spellID
       end
       if not currentSpellID and frame.GetSpellID then
-        currentSpellID = frame:GetSpellID()
+        currentSpellID = NonSecretSpellID(frame:GetSpellID())
       end
       if not currentSpellID then
         currentSpellID = frame._arcSpellID
@@ -9761,7 +9832,7 @@ function ns.CDMEnhance.RefreshActiveProcGlows()
       end
       
       -- Check if this spell should have an active proc glow right now
-      local isOverlayed = spellID and C_SpellActivationOverlay.IsSpellOverlayed(spellID)
+      local isOverlayed = spellID and SafeIsSpellOverlayed(spellID)
       
       if isOverlayed then
         local cfg = GetEffectiveIconSettingsForFrame(frame)
@@ -9867,7 +9938,7 @@ local function SetupShowAlertHook()
           local glowSpellID = frame._arcProcGlowSpellID
           
           -- PRIMARY CHECK: is the spell that started this glow still overlayed?
-          if glowSpellID and C_SpellActivationOverlay.IsSpellOverlayed(glowSpellID) then
+          if glowSpellID and SafeIsSpellOverlayed(glowSpellID) then
             if ns.devMode then
               print("|cffFF9900[ArcUI HideAlertHook]|r SKIPPED - spell still overlayed:", glowSpellID, "type:", glowType)
             end
@@ -9882,7 +9953,7 @@ local function SetupShowAlertHook()
           local baseSpellID = (frame.cooldownInfo and (frame.cooldownInfo.overrideSpellID or frame.cooldownInfo.spellID))
                               or frame._arcSpellID
           if baseSpellID and baseSpellID ~= glowSpellID
-             and C_SpellActivationOverlay.IsSpellOverlayed(baseSpellID) then
+             and SafeIsSpellOverlayed(baseSpellID) then
             if ns.devMode then
               print("|cffFFAA00[ArcUI HideAlertHook]|r REDIRECT - base spell still overlayed:",
                 baseSpellID, "was:", glowSpellID)
@@ -10150,7 +10221,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
           frameSpellID = data.frame.cooldownInfo.overrideSpellID or data.frame.cooldownInfo.spellID
         end
         if not frameSpellID and data.frame.GetSpellID then
-          frameSpellID = data.frame:GetSpellID()
+          frameSpellID = NonSecretSpellID(data.frame:GetSpellID())
         end
         if not frameSpellID then
           frameSpellID = data.frame._arcSpellID

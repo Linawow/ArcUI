@@ -823,9 +823,11 @@ function Presets.RunAutoSwitchAll()
     end
   end
 
-  -- Castbars (all instances)
-  if db.castbars then
-    for _, cb in pairs(db.castbars) do
+  -- Castbars (all instances). In shared mode the live castbar is the account-wide store,
+  -- so auto-switch must evaluate that table (not the per-character one the rest of this loop uses).
+  local cbStore = (ns.API and ns.API.GetCastbarStore and ns.API.GetCastbarStore()) or db
+  if cbStore and cbStore.castbars then
+    for _, cb in pairs(cbStore.castbars) do
       if type(cb) == "table" and cb.presets then
         if Presets.RunAutoSwitch(cb, "castbar") then changed = true end
       end

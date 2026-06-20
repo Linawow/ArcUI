@@ -1479,6 +1479,17 @@ function ns.API.GetGlobalDB()
   return ns.db and ns.db.global
 end
 
+-- Returns the DB table that owns the ACTIVE castbar config (.castbars): the account-wide
+-- global table when shared-castbar mode is on, otherwise this character's own. Single
+-- chokepoint so the castbar runtime, options, import/export and skin auto-switch all
+-- resolve to the same store.
+function ns.API.GetCastbarStore()
+  if ns.db and ns.db.global and ns.db.global.castbarShared then
+    return ns.db.global
+  end
+  return ns.db and ns.db.char
+end
+
 -- ===================================================================
 -- HELPER FUNCTIONS
 -- ===================================================================

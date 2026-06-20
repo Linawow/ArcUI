@@ -24,6 +24,7 @@ local importPreviewData = nil
 local lastExportString = ""
 local lastImportString = ""
 local importMode = "add"  -- "add" or "replace"
+local includeCastbarForExport = false  -- include the player Castbar config in the export
 
 -- ===================================================================
 -- UTILITY FUNCTIONS
@@ -374,9 +375,15 @@ local function ExportSelectedBars()
         end
     end
     
+    -- Castbar: a single config, embedded as a component (same pattern the Master export uses for CR)
+    local castbarPayload = nil
+    if includeCastbarForExport and ns.CastbarImportExport and ns.CastbarImportExport.GetExportPayload then
+        castbarPayload = ns.CastbarImportExport.GetExportPayload()
+    end
+
     local totalCount = auraExportCount + cooldownExportCount + resourceExportCount + timerExportCount
-    if totalCount == 0 then
-        return nil, "No bars selected for export"
+    if totalCount == 0 and not castbarPayload then
+        return nil, "Nothing selected for export"
     end
     
     -- Build export data structure
@@ -395,6 +402,7 @@ local function ExportSelectedBars()
         cooldownBars = cooldownBarsToExport,  -- Cooldown bars
         resourceBars = resourceBarsToExport,  -- Resource bars
         timerBars = timerBarsToExport,        -- Timer bars
+        castbar = castbarPayload,             -- Castbar config (nil unless included)
     }
     
     -- Serialize → Compress → Encode
@@ -456,7 +464,8 @@ local function ParseImportString(importString)
     local hasResourceBars = data.resourceBars and #data.resourceBars > 0
     local hasTimerBars = data.timerBars and #data.timerBars > 0
     
-    if not hasAuraBars and not hasCooldownBars and not hasResourceBars and not hasTimerBars then
+    if not hasAuraBars and not hasCooldownBars and not hasResourceBars and not hasTimerBars
+       and not (type(data.castbar) == "table") then
         return nil, "No bars found in import data"
     end
     
@@ -481,6 +490,10 @@ local function GenerateImportPreview(data)
         data.exportedBy or "Unknown",
         data.realm or "Unknown"
     ))
+
+    if type(data.castbar) == "table" then
+        table.insert(lines, "|cffCC66FFCastbar:|r 1 (full castbar config)")
+    end
     
     -- Aura bars
     if auraCount > 0 then
@@ -603,7 +616,7 @@ local function WriteAuraBarToSlot(db, slot, importedBar)
     print(string.format("|cff00ccffArc UI Import|r: Slot %d '%s' → cdID=%d%s", slot, name, cdID, altList))
 end
 
-local function ImportBars(data, mode)
+local function ImportBars(data, mode, castbarOpts)
     local db = ns.API.GetDB and ns.API.GetDB()
     if not db then 
         return false, "Database not available"
@@ -893,6 +906,51 @@ local function ImportBars(data, mode)
         end
     end
     
+    -- ═══════════════════════════════════════════════════════════════
+    -- IMPORT CASTBAR (single config; reuse the castbar importer, which replaces it)
+    -- ═══════════════════════════════════════════════════════════════
+    local castbarImported = false
+    local castbarSkinSaved = nil
+    if type(data.castbar) == "table" then
+        local cbMode = (castbarOpts and castbarOpts.castbarMode) or "replace"
+        local cbCfg  = data.castbar.config
+        if cbMode == "skin" then
+            -- Save the imported castbar as a named skin instead of replacing the live castbar.
+            -- Skin mode must NEVER silently fall back to replacing the live castbar.
+            if not (ns.Presets and ns.Presets.SaveSkin) then
+                table.insert(messages, "Castbar skin save unavailable")
+            elseif type(cbCfg) ~= "table" then
+                table.insert(messages, "Invalid castbar payload, skin not saved")
+            else
+                local skinName = castbarOpts and castbarOpts.castbarSkinName
+                skinName = (skinName and skinName:match("^%s*(.-)%s*$")) or ""
+                if skinName == "" then skinName = "Imported Castbar" end
+                -- The skin library is ONE flat name-keyed namespace shared across bar types,
+                -- so suffix until unique rather than silently overwriting an existing skin.
+                if ns.Presets.SkinExists then
+                    local base, n = skinName, 2
+                    while ns.Presets.SkinExists(skinName) do
+                        skinName = string.format("%s (%d)", base, n)
+                        n = n + 1
+                    end
+                end
+                if ns.Presets.SaveSkin(skinName, cbCfg, "castbar") then
+                    castbarSkinSaved = skinName
+                else
+                    table.insert(messages, "Castbar skin save failed")
+                end
+            end
+        elseif ns.CastbarImportExport and ns.CastbarImportExport.Import then
+            -- Replace the live castbar (default).
+            local ok = ns.CastbarImportExport.Import({ payload = data.castbar })
+            if ok then
+                castbarImported = true
+            else
+                table.insert(messages, "Castbar import failed")
+            end
+        end
+    end
+
     -- Trigger validation for imported aura bars
     if ns.API.ValidateAllBarTracking then
         C_Timer.After(0.1, function()
@@ -933,6 +991,11 @@ local function ImportBars(data, mode)
     end
     
     local result = string.format("Imported %d bar(s)", imported)
+    if castbarImported then
+        result = result .. " and 1 castbar"
+    elseif castbarSkinSaved then
+        result = result .. string.format(" and saved castbar skin '%s'", castbarSkinSaved)
+    end
     if skipped > 0 then
         result = result .. string.format(", skipped %d", skipped)
     end
@@ -1021,9 +1084,10 @@ function ns.BarsImportExport.GetOptionsTable()
                     for _, bar in ipairs(GetEnabledResourceBars()) do
                         selectedResourceBarsForExport[bar.slot] = true
                     end
+                    includeCastbarForExport = true
                 end,
             },
-            
+
             selectNoneBtn = {
                 type = "execute",
                 name = "Select None",
@@ -1039,9 +1103,10 @@ function ns.BarsImportExport.GetOptionsTable()
                     for k in pairs(selectedResourceBarsForExport) do
                         selectedResourceBarsForExport[k] = false
                     end
+                    includeCastbarForExport = false
                 end,
             },
-            
+
             spacer1 = {
                 type = "description",
                 name = "",
@@ -1205,6 +1270,25 @@ function ns.BarsImportExport.GetOptionsTable()
                 end)(),
             },
             
+            -- Castbar selection (single config, not a per-slot list)
+            castbarSelectionGroup = {
+                type = "group",
+                name = "Castbar",
+                order = 7.7,
+                inline = true,
+                args = {
+                    includeCastbar = {
+                        type = "toggle",
+                        name = "Include Castbar settings",
+                        desc = "Include your full Castbar configuration (size, colors, fonts, per-cast-type profiles, thresholds, position) in this export string. On import it replaces the castbar.",
+                        order = 1,
+                        width = "full",
+                        get = function() return includeCastbarForExport end,
+                        set = function(_, val) includeCastbarForExport = val end,
+                    },
+                },
+            },
+
             exportBtn = {
                 type = "execute",
                 name = "Export Selected",

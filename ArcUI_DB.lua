@@ -8,6 +8,18 @@
 local ADDON, ns = ...
 ns.API = ns.API or {}  -- Initialize API table
 
+-- 12.1-forward compat: the global SetDesaturation(region, bool) helper was REMOVED in
+-- 12.1 (the texture methods SetDesaturated/SetDesaturation still exist). AceGUI's
+-- CheckBox (and other libs) call the global -> "attempt to call a nil value" when the
+-- options panel opens. Polyfill it once. Inert on 12.0.7 where the global still exists.
+if not SetDesaturation then
+  function SetDesaturation(region, desaturation)
+    if region and region.SetDesaturated then
+      region:SetDesaturated(desaturation)
+    end
+  end
+end
+
 -- ===================================================================
 -- DEFAULT THRESHOLD PRESETS
 -- ===================================================================
@@ -659,6 +671,8 @@ ns.DB_DEFAULTS = {
       interruptFeedbackEnabled = false,
       interruptColor = {r=1, g=0.15, b=0.15, a=1},
       interruptFadeDuration = 1.0,
+      -- Hide the default Blizzard castbar (PlayerCastingBarFrame)
+      hideCastBar = false,
       -- Spell name shortening (display only; off by default)
       spellShortenEnabled = false,
       spellShortenLength = 20,
@@ -702,6 +716,18 @@ ns.DB_DEFAULTS = {
 
 -- Store presets for easy access
 ns.ThresholdPresets = DEFAULT_THRESHOLDS
+
+-- ===================================================================
+-- ACCOUNT-WIDE SHARED CASTBAR (opt-in, default OFF)
+-- When ns.db.global.castbarShared is true, the castbar accessors (ns.API.GetCastbarStore)
+-- return global.castbars instead of the per-character char.castbars, so ONE castbar config
+-- applies to every character. global.castbars is its OWN deep copy of the per-instance
+-- template, so it never aliases the per-character store and the two stay independent.
+-- ===================================================================
+ns.DB_DEFAULTS.global.castbarShared        = false
+ns.DB_DEFAULTS.global.castbarShareLocation = false  -- when sharing, keep the bar POSITION per-character unless opted in
+ns.DB_DEFAULTS.global.castbarSharedInit    = false
+ns.DB_DEFAULTS.global.castbars             = { ["*"] = CopyTable(ns.DB_DEFAULTS.char.castbars["*"]) }
 
 -- ===================================================================
 -- HELPER: Get Bar Config (Buff/Debuff bars)
