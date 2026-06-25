@@ -1,4 +1,4 @@
-## 3.7.5
+## 3.7.5.a
 
 ### New Features
 
@@ -22,6 +22,14 @@
 
 ### Bug Fixes
 
+- **Cooldown Icons Vanishing in Mythic+ and Arenas**: Tracked down and fixed a core cause of the cooldown display breaking partway through dungeons, raids and PvP, where icons could disappear until a reload.
+- **Dynamic Cooldowns Groups Loading**: Fixed groups using Dynamic Cooldowns whose icons could stay collapsed or fail to appear until a reload, most noticeably right after importing a profile.
+- **Imported Groups No Longer Scatter**: If an imported profile referenced a group that didn't come through, its icons used to fling across the screen. The missing group is now rebuilt and its icons stay together.
+- **Quick Import Keeps Icons in Their Groups**: Importing a layout from another of your characters on the same spec now keeps each icon in its group, instead of emptying custom groups and dumping their icons into the defaults.
+- **Account-Wide Imports Carry Shared Layouts**: Account-wide (master) imports now bring your shared Group Layouts with them, so a profile linked to a shared layout keeps its groups and their positions.
+- **Totem Tracking Transfers on Import**: The Arc Auras totem-slot toggle now exports and imports, so totems turn on for whoever imports the profile.
+- **Linked Layout Group Positions**: A group's position now loads correctly when re-importing a profile that's linked to a shared Group Layout.
+- **Correct Group Count in Preview**: The import and export preview now shows the real number of groups for a profile linked to a shared layout, instead of undercounting.
 - **Bar Text Alignment**: Left- and right-aligned bar name and duration text now pin their first character to the chosen edge instead of centering on it, so long names read correctly and no longer drift.
 - **Resource Text Color in Instances**: Fixed resource bar value text that could break its threshold coloring inside dungeons, raids and PvP.
 - **Self-Buff Icons Display Correctly**: Cooldown icons, custom labels and glows that track a personal self-buff (like Voidfall) now correctly recognize the buff as active instead of treating it as missing.

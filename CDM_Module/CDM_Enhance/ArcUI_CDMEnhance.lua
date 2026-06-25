@@ -7590,8 +7590,15 @@ function ns.CDMEnhance.ForceCDMFrameCreation()
   
   for _, viewerName in ipairs(viewerNames) do
     local viewer = _G[viewerName]
-    if viewer and viewer.GetCooldownIDs and viewer.GetItemContainerFrame then
-      local cooldownIDs = viewer:GetCooldownIDs()
+    -- TAINT FIX (M+/PvP "tainted by ArcUI" CDM brick): do NOT call viewer:GetCooldownIDs().
+    -- That runs Blizzard's GetOrderedCooldownIDs -> CheckBuildDisplayData, which REBUILDS the
+    -- shared DataProvider cooldownInfoByID map. Triggered from our (always-tainted) code it bakes
+    -- ArcUI taint into that Blizzard map; every later OnCooldownIDSet then reads a tainted
+    -- cooldownInfo, so the next CDM refresh that compares a secret (totem/pet aura) blocks and
+    -- bricks CDM. The C API queries the engine directly and does NOT rebuild/taint the Lua map
+    -- (same call ArcUI_Core.lua already uses).
+    if viewer and viewer.GetCategory and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCategorySet and viewer.GetItemContainerFrame then
+      local cooldownIDs = C_CooldownViewer.GetCooldownViewerCategorySet(viewer:GetCategory(), false)
       if cooldownIDs then
         for _, cdID in ipairs(cooldownIDs) do
           -- This call creates the frame if it doesn't exist

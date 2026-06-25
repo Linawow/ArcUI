@@ -29,7 +29,7 @@ local C_DESC  = "ffb0b0b0"  -- entry description
 -- ===================================================================
 CL.versions = {
   {
-    version = "3.7.5",
+    version = "3.7.5.a",
     sections = {
       {
         header = "New Features", color = C_NEW, items = {
@@ -55,6 +55,14 @@ CL.versions = {
       },
       {
         header = "Bug Fixes", color = C_FIX, items = {
+          { title = "Cooldown Icons Vanishing in Mythic+ and Arenas", desc = "Tracked down and fixed a core cause of the cooldown display breaking partway through dungeons, raids and PvP, where icons could disappear until a reload." },
+          { title = "Dynamic Cooldowns Groups Loading", desc = "Fixed groups using Dynamic Cooldowns whose icons could stay collapsed or fail to appear until a reload, most noticeably right after importing a profile." },
+          { title = "Imported Groups No Longer Scatter", desc = "If an imported profile referenced a group that didn't come through, its icons used to fling across the screen. The missing group is now rebuilt and its icons stay together." },
+          { title = "Quick Import Keeps Icons in Their Groups", desc = "Importing a layout from another of your characters on the same spec now keeps each icon in its group, instead of emptying custom groups and dumping their icons into the defaults." },
+          { title = "Account-Wide Imports Carry Shared Layouts", desc = "Account-wide (master) imports now bring your shared Group Layouts with them, so a profile linked to a shared layout keeps its groups and their positions." },
+          { title = "Totem Tracking Transfers on Import", desc = "The Arc Auras totem-slot toggle now exports and imports, so totems turn on for whoever imports the profile." },
+          { title = "Linked Layout Group Positions", desc = "A group's position now loads correctly when re-importing a profile that's linked to a shared Group Layout." },
+          { title = "Correct Group Count in Preview", desc = "The import and export preview now shows the real number of groups for a profile linked to a shared layout, instead of undercounting." },
           { title = "Bar Text Alignment", desc = "Left- and right-aligned bar name and duration text now pin their first character to the chosen edge instead of centering on it, so long names read correctly and no longer drift." },
           { title = "Resource Text Color in Instances", desc = "Fixed resource bar value text that could break its threshold coloring inside dungeons, raids and PvP." },
           { title = "Self-Buff Icons Display Correctly", desc = "Cooldown icons, custom labels and glows that track a personal self-buff (like Voidfall) now correctly recognize the buff as active instead of treating it as missing." },
