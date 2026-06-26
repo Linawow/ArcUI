@@ -108,6 +108,11 @@ local DEFAULTS = {
 	-- Which instances the ready-check popup/announce fires in (default: Mythic dungeons only).
 	contexts         = { mplus = true, mythic = true, heroic = false, normal = false, raid = false },
 	smartOpen        = false,            -- on a ready check, wait and open only if someone else calls your marker
+	interruptAlert   = false,            -- sound/TTS when your FOCUS starts casting and your interrupt is ready
+	interruptAlertTTS = false,           -- speak it (TTS) instead of a sound
+	interruptAlertText = "Kick",         -- the TTS phrase
+	interruptAlertSound = "Default",     -- sound to play (non-TTS): "Default", "None", a built-in name, or a LibSharedMedia sound
+	interruptAlertChannel = "Master",    -- sound channel
 	message          = "My Focus Kick is %MARKER%",
 	macroEnabled     = false,
 	macroName        = "FocusKick",      -- set-focus-and-kick macro
@@ -316,6 +321,116 @@ end
 local function GetMyInterruptName()
 	local id = GetMyInterruptID()
 	return id and C_Spell.GetSpellName(id) or nil
+end
+
+--------------------------------------------------------------------------------
+-- Interrupt Alert: sound/TTS when your FOCUS starts casting AND your interrupt is
+-- ready. Interruptibility is secret in M+ (and the INTERRUPTIBLE events don't fire
+-- for enemies), so this fires on any focus cast while your kick is up; pair it with
+-- a cast-bar addon for the interruptible visual. Everything here is non-secret.
+--------------------------------------------------------------------------------
+
+local interruptCD       -- hidden shadow Cooldown, created lazily
+local alertFrame        -- focus cast-event listener
+local lastInterruptAlert = 0
+
+-- Non-secret "is my interrupt ready" read: feed the interrupt's cooldown duration
+-- object to a hidden Cooldown, then IsShown() == on cooldown.
+local function InterruptReady()
+	local id = GetMyInterruptID()
+	if not id or not (C_Spell and C_Spell.GetSpellCooldownDuration) then return false end
+	local dur = C_Spell.GetSpellCooldownDuration(id, true)
+	if not dur then return false end
+	if not interruptCD then
+		interruptCD = CreateFrame("Cooldown", nil, UIParent, "CooldownFrameTemplate")
+		interruptCD:SetSize(1, 1)
+		interruptCD:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", -100, -100)
+		interruptCD:SetAlpha(0)
+		interruptCD:EnableMouse(false)
+		interruptCD:SetHideCountdownNumbers(true)
+		interruptCD:SetDrawEdge(false)
+		interruptCD:SetDrawBling(false)
+		interruptCD:Show()
+	end
+	interruptCD:SetCooldownFromDurationObject(dur, true)
+	return not interruptCD:IsShown()
+end
+
+local function TTSVoice()
+	local v = C_VoiceChat and C_VoiceChat.GetTtsVoices and C_VoiceChat.GetTtsVoices()
+	return (v and v[1] and v[1].voiceID) or 0
+end
+
+-- Built-in alert sounds, always available. "Default" maps to Ready Check (the
+-- original alert sound). The full list also includes any LibSharedMedia sounds,
+-- matching the Cooldown Reminder sound options.
+local BUILTIN_SOUNDS = {
+	["Ready Check"]  = SOUNDKIT.READY_CHECK,
+	["Raid Warning"] = SOUNDKIT.RAID_WARNING,
+	["Alarm Clock"]  = SOUNDKIT.ALARM_CLOCK_WARNING_3,
+	["Boss Whisper"] = SOUNDKIT.UI_RAID_BOSS_WHISPER_WARNING,
+	["Map Ping"]     = SOUNDKIT.MAP_PING,
+	["BNet Toast"]   = SOUNDKIT.UI_BNET_TOAST,
+	["Whisper"]      = SOUNDKIT.TELL_MESSAGE,
+}
+local BUILTIN_ORDER = { "Ready Check", "Raid Warning", "Alarm Clock", "Boss Whisper", "Map Ping", "BNet Toast", "Whisper" }
+
+-- Ordered list of selectable sounds: Default, the built-ins, LibSharedMedia sounds, None.
+local function GetSoundList()
+	local list, seen = { "Default" }, { Default = true, None = true }
+	for _, name in ipairs(BUILTIN_ORDER) do
+		if not seen[name] then list[#list + 1] = name; seen[name] = true end
+	end
+	local lsm = LibStub and LibStub("LibSharedMedia-3.0", true)
+	if lsm then
+		for _, name in ipairs(lsm:List("sound") or {}) do
+			if not seen[name] then list[#list + 1] = name; seen[name] = true end
+		end
+	end
+	list[#list + 1] = "None"
+	return list
+end
+
+-- Play the configured interrupt-alert sound.
+local function PlayInterruptSound()
+	local name    = DB.interruptAlertSound or "Default"
+	local channel = DB.interruptAlertChannel or "Master"
+	if name == "None" then return end
+	if name == "Default" then PlaySound(SOUNDKIT.READY_CHECK, channel); return end
+	local builtin = BUILTIN_SOUNDS[name]
+	if builtin then PlaySound(builtin, channel); return end
+	local lsm = LibStub and LibStub("LibSharedMedia-3.0", true)
+	local path = lsm and lsm:Fetch("sound", name, true)
+	if path then PlaySoundFile(path, channel)
+	else PlaySound(SOUNDKIT.READY_CHECK, channel) end
+end
+
+local function FireInterruptAlert()
+	if (GetTime() - lastInterruptAlert) < 1.5 then return end  -- throttle
+	lastInterruptAlert = GetTime()
+	if DB.interruptAlertTTS then
+		if C_VoiceChat and C_VoiceChat.SpeakText then
+			C_VoiceChat.SpeakText(TTSVoice(), DB.interruptAlertText or "Kick", 0, 100)
+		end
+	else
+		PlayInterruptSound()
+	end
+end
+
+-- Register the focus cast events only while the module and the alert are both on.
+local function SyncInterruptAlert()
+	if not alertFrame then
+		alertFrame = CreateFrame("Frame")
+		alertFrame:SetScript("OnEvent", function()
+			if DB and GDB and GDB.enabled and DB.interruptAlert and InterruptReady() then FireInterruptAlert() end
+		end)
+	end
+	if DB and GDB and GDB.enabled and DB.interruptAlert then
+		alertFrame:RegisterUnitEvent("UNIT_SPELLCAST_START", "focus")
+		alertFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "focus")
+	else
+		alertFrame:UnregisterAllEvents()
+	end
 end
 
 -- `fromTrigger` = fired by an event (e.g. the ready check) rather than a click; on
@@ -1041,10 +1156,12 @@ local function ActivateRuntime()
 	eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 	eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 	eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+	SyncInterruptAlert()
 end
 
 local function DeactivateRuntime()
 	if eventFrame then eventFrame:UnregisterAllEvents() end
+	if alertFrame then alertFrame:UnregisterAllEvents() end
 	if frame then frame:Hide() end
 end
 
@@ -1177,6 +1294,52 @@ function ns.GetSetMyKickOptionsTable()
 		name = "Announce message (%MARKER% = your marker icon)",
 		get = function() return DB.message end,
 		set = function(_, v) DB.message = v end,
+	}
+	args.interruptAlertHdr = { type = "header", order = 7.1, name = "Interrupt Alert (watches your focus)" }
+	args.interruptAlert = {
+		type = "toggle", order = 7.2, width = "full",
+		name = "Alert when your focus starts casting and your kick is ready",
+		desc = "Play a sound or speak a word when your focus target starts casting and your interrupt is off cooldown. It cannot tell whether the cast is interruptible (that is hidden from addons in Mythic+), so it fires on any focus cast while your kick is up. Pair it with a cast bar for the interruptible cue.",
+		get = function() return DB.interruptAlert end,
+		set = function(_, v) DB.interruptAlert = v; SyncInterruptAlert() end,
+	}
+	args.interruptAlertTTS = {
+		type = "toggle", order = 7.3, width = 1.6,
+		name = "Speak it (TTS) instead of a sound",
+		get = function() return DB.interruptAlertTTS end,
+		set = function(_, v) DB.interruptAlertTTS = v end,
+	}
+	args.interruptAlertText = {
+		type = "input", order = 7.4, width = 1.6,
+		name = "Spoken word (TTS)",
+		disabled = function() return not DB.interruptAlertTTS end,
+		get = function() return DB.interruptAlertText end,
+		set = function(_, v) DB.interruptAlertText = (v ~= "" and v) or "Kick" end,
+	}
+	args.interruptAlertSound = {
+		type = "select", order = 7.5, width = 1.5,
+		name = "Alert sound",
+		desc = "Sound to play when not using TTS. Includes any LibSharedMedia sounds, like Cooldown Reminders.",
+		disabled = function() return DB.interruptAlertTTS end,
+		values = function() local t = {}; for _, s in ipairs(GetSoundList()) do t[s] = s end; return t end,
+		sorting = GetSoundList,
+		get = function() return DB.interruptAlertSound or "Default" end,
+		set = function(_, v) DB.interruptAlertSound = v; PlayInterruptSound() end,
+	}
+	args.interruptAlertPreview = {
+		type = "execute", order = 7.6, width = 0.5,
+		name = "Preview",
+		disabled = function() return DB.interruptAlertTTS end,
+		func = function() PlayInterruptSound() end,
+	}
+	args.interruptAlertChannel = {
+		type = "select", order = 7.7, width = 1.0,
+		name = "Sound channel",
+		disabled = function() return DB.interruptAlertTTS end,
+		values = { Master = "Master", SFX = "SFX", Music = "Music", Ambience = "Ambience", Dialog = "Dialog" },
+		sorting = { "Master", "SFX", "Music", "Ambience", "Dialog" },
+		get = function() return DB.interruptAlertChannel or "Master" end,
+		set = function(_, v) DB.interruptAlertChannel = v end,
 	}
 	args.descx = {
 		type = "description", order = 8, fontSize = "small",

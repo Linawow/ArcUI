@@ -177,12 +177,21 @@ local function EvaluateThresholdGlows()
                 end
               end
 
-              local durObj = C_UnitAuras and C_UnitAuras.GetAuraDuration
-                and C_UnitAuras.GetAuraDuration(trackedUnit, auraID)
-              if not durObj then
-                local fallback = trackedUnit == "player" and "target" or "player"
-                durObj = C_UnitAuras and C_UnitAuras.GetAuraDuration
-                  and C_UnitAuras.GetAuraDuration(fallback, auraID)
+              -- Use the frame's ACTUAL aura unit (not a category guess) and VALIDATE
+              -- the instance before calling GetAuraDuration. That API is
+              -- RequiresValidUnitAuraInstance, so it THROWS (not returns nil) when the
+              -- (unit, auraInstanceID) pair isn't a live aura -- a nil/0 self-aura
+              -- instance, an expired aura, or a wrong-unit guess. The old code assumed
+              -- a nil return and "fell back" to the other unit, but the first bad call
+              -- already errored ("bad argument to GetAuraDuration"). GetAuraDataByAuraInstanceID
+              -- is a non-throwing lookup (nil when absent), so it gates the call safely.
+              local glowUnit = frame.auraDataUnit or trackedUnit
+              local durObj
+              if glowUnit and auraID and auraID ~= 0 and C_UnitAuras
+                and C_UnitAuras.GetAuraDataByAuraInstanceID
+                and C_UnitAuras.GetAuraDataByAuraInstanceID(glowUnit, auraID)
+                and C_UnitAuras.GetAuraDuration then
+                durObj = C_UnitAuras.GetAuraDuration(glowUnit, auraID)
               end
 
               if durObj then

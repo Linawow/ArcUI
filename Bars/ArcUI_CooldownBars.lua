@@ -617,9 +617,13 @@ function ns.CooldownBars.ScanPlayerSpells()
     end
     
     local chargeInfo = C_Spell.GetSpellCharges(spellID)
-    local hasCharges = (chargeInfo ~= nil)
+    -- Only MULTI-charge spells (maxCharges > 1) are charge spells. Single-charge
+    -- spells (maxCharges == 1, e.g. Evoker Fire Breath) return non-nil chargeInfo but
+    -- behave as normal cooldowns -- treating them as charge spells kept them OUT of the
+    -- cooldown-bar picker and made a cooldown bar render the 0/1 charge count.
+    local hasCharges = (chargeInfo ~= nil and chargeInfo.maxCharges ~= nil and chargeInfo.maxCharges > 1)
     local maxCharges = 0
-    
+
     if hasCharges and chargeInfo.maxCharges then
       maxCharges = chargeInfo.maxCharges
     end
@@ -817,11 +821,13 @@ function ns.CooldownBars.AddSpellByID(spellID)
     return false, "Cannot get spell info"
   end
   
-  -- Check for charges - chargeInfo being non-nil means it's a charge spell
+  -- A spell is a CHARGE spell only when it has more than one charge. Single-charge
+  -- spells (maxCharges == 1, e.g. Evoker Fire Breath) report non-nil chargeInfo but
+  -- are normal cooldowns (see the catalog scan above for why this matters).
   local chargeInfo = C_Spell.GetSpellCharges(spellID)
-  local hasCharges = (chargeInfo ~= nil)
+  local hasCharges = (chargeInfo ~= nil and chargeInfo.maxCharges ~= nil and chargeInfo.maxCharges > 1)
   local maxCharges = 0
-  
+
   if hasCharges and chargeInfo.maxCharges then
     maxCharges = chargeInfo.maxCharges
   end
@@ -2590,7 +2596,10 @@ UpdateCooldownBar = function(barData)
   local isGCDTracker = spellID == 61304 or (cfg and cfg.tracking and cfg.tracking.trackGCD)
   
   if chargeInfo and chargeInfo.maxCharges and chargeInfo.maxCharges > 1 then
-    -- TRUE MULTI-CHARGE SPELL: use charge duration
+    -- TRUE MULTI-CHARGE SPELL (maxCharges > 1): use the charge/recharge duration.
+    -- IMPORTANT: single-charge spells (maxCharges == 1) must NOT use this -- their
+    -- GetSpellChargeDuration reads 0, while GetSpellCooldownDuration carries the real
+    -- remaining cooldown. They fall through to the cooldown-duration branch below.
     durObj = chargeDurObj
   elseif isGCDTracker then
     -- GCD TRACKER: Use duration object when GCD is active (opposite of normal behavior)
@@ -2607,7 +2616,7 @@ UpdateCooldownBar = function(barData)
   
   -- For charge spells: feed the charge shadow so IsCooldownReadyForBar can read it.
   -- Charge shadow shows when a charge is actively recharging (not all full).
-  if chargeInfo then
+  if chargeInfo and chargeInfo.maxCharges and chargeInfo.maxCharges > 1 then
     local chargeShadow = GetChargeShadowForBar(barData)
     barData._arcFeedingChargeShadow = (barData._arcFeedingChargeShadow or 0) + 1
     CooldownFrame_Clear(chargeShadow)
@@ -2679,8 +2688,9 @@ UpdateCooldownBar = function(barData)
   
   barData.nameText:SetText(spellName or ("Spell " .. spellID))
   
-  -- Update charge count display for charge spells
-  if chargeInfo and barData.currentText then
+  -- Update charge count display for charge spells (only TRUE multi-charge spells; a
+  -- single-charge spell is a normal cooldown and must not show a 0/1 charge count)
+  if chargeInfo and chargeInfo.maxCharges and chargeInfo.maxCharges > 1 and barData.currentText then
     local showText = cfg and cfg.display and cfg.display.showText
     if showText ~= false then
       -- Show current charges (secret value passthrough via SetText)
@@ -2742,11 +2752,12 @@ UpdateCooldownBar = function(barData)
     
     -- Apply color (with curve if enabled)
     if useColorCurve then
-      -- Determine which duration source this bar is actually using.
-      -- Spells with maxCharges > 1 use GetSpellChargeDuration; everything else (including
-      -- maxCharges == 1 spells) uses GetSpellCooldownDuration.  Storing this at setup time
-      -- prevents the OnUpdate from alternating between two slightly-out-of-sync duration
-      -- objects, which caused rapid color flickering for maxCharges=1 spells.
+      -- Determine which duration source this bar is actually using -- it MUST match the
+      -- durObj chosen above. Only TRUE multi-charge spells (maxCharges > 1) use
+      -- GetSpellChargeDuration; everything else (including single-charge spells, whose
+      -- charge duration reads 0) uses GetSpellCooldownDuration. Storing this once at setup
+      -- time prevents the OnUpdate from alternating between two slightly-out-of-sync
+      -- duration objects, which caused rapid color flickering for maxCharges == 1 spells.
       local useChargeDur = chargeInfo and chargeInfo.maxCharges and chargeInfo.maxCharges > 1
 
       -- Store data for OnUpdate handler
