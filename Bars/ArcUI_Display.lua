@@ -3475,6 +3475,32 @@ function ns.Display.AreDeleteButtonsVisible()
 end
 
 -- ===================================================================
+-- FILL INSET HELPER
+-- Anchors a single-fill StatusBar inside its frame, inset per-side by the
+-- configured Fill Inset padding (physical px). Shared by UpdateDurationBar
+-- and ApplyAppearance so the inset survives every appearance/layout refresh
+-- instead of being clobbered back to full-size by whichever runs last.
+-- ===================================================================
+local function ApplyFillInset(barFrame, display)
+  local bar = barFrame and barFrame.bar
+  if not bar then return end
+  local padL = (display and display.barPaddingL) or 0
+  local padR = (display and display.barPaddingR) or 0
+  local padT = (display and display.barPaddingT) or 0
+  local padB = (display and display.barPaddingB) or 0
+  bar:ClearAllPoints()
+  if padL == 0 and padR == 0 and padT == 0 and padB == 0 then
+    bar:SetAllPoints(barFrame)
+  else
+    local _s = barFrame:GetEffectiveScale()
+    local _, _h = GetPhysicalScreenSize()
+    local _onePx = (_h and _h > 0 and _s and _s > 0) and (768 / _h) / _s or 1
+    bar:SetPoint("TOPLEFT", barFrame, "TOPLEFT", _onePx * padL, -_onePx * padT)
+    bar:SetPoint("BOTTOMRIGHT", barFrame, "BOTTOMRIGHT", -_onePx * padR, _onePx * padB)
+  end
+end
+
+-- ===================================================================
 -- UPDATE CUSTOM BAR (Cast-based tracking with duration countdown)
 -- ===================================================================
 function ns.Display.UpdateDurationBar(barNumber, stacks, maxStacks, active, sourceBar, stacksFontString, iconTexture, auraName, cachedConfig)
@@ -3787,22 +3813,10 @@ function ns.Display.UpdateDurationBar(barNumber, stacks, maxStacks, active, sour
     end
     
     -- Apply expensive bar setup. Inset the fill from each edge by the
-    -- per-side padding (in physical pixels) so custom fill textures don't
-    -- need baked-in transparent margins. Background stays full-size.
-    barFrame.bar:ClearAllPoints()
-    local padL = barConfig.display.barPaddingL or 0
-    local padR = barConfig.display.barPaddingR or 0
-    local padT = barConfig.display.barPaddingT or 0
-    local padB = barConfig.display.barPaddingB or 0
-    if padL == 0 and padR == 0 and padT == 0 and padB == 0 then
-      barFrame.bar:SetAllPoints(barFrame)
-    else
-      local _s = barFrame:GetEffectiveScale()
-      local _, _h = GetPhysicalScreenSize()
-      local _onePx = (_h and _h > 0 and _s and _s > 0) and (768 / _h) / _s or 1
-      barFrame.bar:SetPoint("TOPLEFT", barFrame, "TOPLEFT", _onePx * padL, -_onePx * padT)
-      barFrame.bar:SetPoint("BOTTOMRIGHT", barFrame, "BOTTOMRIGHT", -_onePx * padR, _onePx * padB)
-    end
+    -- per-side Fill Inset padding so custom fill textures don't need baked-in
+    -- transparent margins. Background stays full-size. (Shared helper so the
+    -- inset matches ApplyAppearance and can't drift out of sync.)
+    ApplyFillInset(barFrame, barConfig.display)
     barFrame.bar:SetStatusBarTexture(texturePath)
     -- Note: Frame level is set by the strata block later, but set baseline here
     -- Fill bar should be 1 level above parent (background is at parent level)
@@ -4826,9 +4840,11 @@ function ns.Display.ApplyAppearance(barNumber)
   -- barFrame:SetScale(cfg.barScale) -- REMOVED - scale is now applied to size
   barFrame:SetAlpha(cfg.opacity * (barFrames[barNumber] and barFrames[barNumber]._arcHideWhenAlpha or 1.0))
   
-  -- Bar padding (always 0 - no UI option exposed)
-  barFrame.bar:ClearAllPoints()
-  barFrame.bar:SetAllPoints(barFrame)
+  -- Fill Inset: keep the fill anchored inside the frame with the configured
+  -- per-side padding. Applied unconditionally here (not just on config change)
+  -- so the inset survives every appearance/layout refresh — group reflows,
+  -- spec/visibility refresh, etc. — instead of snapping back to full-size.
+  ApplyFillInset(barFrame, cfg)
   
   -- ═══════════════════════════════════════════════════════════════
   -- CDM GROUP ANCHOR
